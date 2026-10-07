@@ -1,8 +1,12 @@
-import { Navigate, NavLink, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
+import { Sidebar } from "./components/Sidebar";
 import { useAuth } from "./auth/AuthContext";
-import { Login } from "./pages/Login";
-import { Status } from "./pages/Status";
 import { Ask } from "./pages/Ask";
+import { Documents } from "./pages/Documents";
+import { History } from "./pages/History";
+import { Login } from "./pages/Login";
+import { Overview } from "./pages/Overview";
+import { Status } from "./pages/Status";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { token } = useAuth();
@@ -10,40 +14,20 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-const navLinkClasses = ({ isActive }: { isActive: boolean }) =>
-  `font-mono text-xs uppercase tracking-wider pb-3 border-b-2 transition-colors ${
-    isActive
-      ? "border-[var(--index)] text-[var(--ink)]"
-      : "border-transparent text-[var(--ink-soft)] hover:text-[var(--ink)]"
-  }`;
-
 function Layout({ children }: { children: React.ReactNode }) {
-  const { logout } = useAuth();
   return (
-    <div className="min-h-screen bg-[var(--paper)] text-[var(--ink)]">
-      <header className="border-b border-[var(--line)]">
-        <div className="mx-auto flex max-w-5xl items-end gap-8 px-6 pt-5">
-          <span className="font-display pb-3 text-base font-semibold tracking-tight">
-            DOC<span className="text-[var(--index)]">/</span>INDEX
-          </span>
-          <nav className="flex gap-6">
-            <NavLink to="/status" className={navLinkClasses}>
-              Status
-            </NavLink>
-            <NavLink to="/ask" className={navLinkClasses}>
-              Ask
-            </NavLink>
-          </nav>
-          <button
-            onClick={logout}
-            className="font-mono ml-auto pb-3 text-xs uppercase tracking-wider text-[var(--ink-soft)] hover:text-[var(--ink)]"
-          >
-            Log out
-          </button>
-        </div>
-      </header>
-      <main className="mx-auto max-w-5xl px-6 py-10">{children}</main>
+    <div className="min-h-screen bg-[var(--paper)] text-[13px] text-[var(--ink)] lg:flex">
+      <Sidebar />
+      <main className="w-full max-w-7xl px-6 py-7">{children}</main>
     </div>
+  );
+}
+
+function guarded(element: React.ReactNode) {
+  return (
+    <RequireAuth>
+      <Layout>{element}</Layout>
+    </RequireAuth>
   );
 }
 
@@ -51,27 +35,14 @@ function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
-      <Route
-        path="/status"
-        element={
-          <RequireAuth>
-            <Layout>
-              <Status />
-            </Layout>
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/ask"
-        element={
-          <RequireAuth>
-            <Layout>
-              <Ask />
-            </Layout>
-          </RequireAuth>
-        }
-      />
-      <Route path="*" element={<Navigate to="/status" replace />} />
+      <Route path="/" element={guarded(<Overview />)} />
+      <Route path="/ask" element={guarded(<Ask />)} />
+      <Route path="/documents" element={guarded(<Documents />)} />
+      <Route path="/history" element={guarded(<History />)} />
+      <Route path="/ingestion" element={guarded(<Status />)} />
+      {/* Old bookmarks from the two-page layout. */}
+      <Route path="/status" element={<Navigate to="/ingestion" replace />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }
