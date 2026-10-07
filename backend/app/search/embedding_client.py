@@ -5,7 +5,28 @@ docker-compose.yml's commented-out llama-embed service.
 
 from __future__ import annotations
 
+import math
+
 import httpx
+
+# ChunkRecord.embedding is a fixed pgvector Vector(1024) column (see
+# app/models.py). Qwen3-Embedding-4B natively outputs 2560 dims, but it's
+# trained with Matryoshka Representation Learning specifically so a
+# prefix of its output can be used at a smaller dimension without the
+# usual truncation quality loss — officially supported sizes include
+# 1024. If you swap in a model whose native output is already 1024
+# (e.g. BGE-M3), this is a no-op.
+_TARGET_DIM = 1024
+
+
+def _truncate_and_renormalize(vector: list[float], dim: int = _TARGET_DIM) -> list[float]:
+    if len(vector) <= dim:
+        return vector
+    truncated = vector[:dim]
+    norm = math.sqrt(sum(x * x for x in truncated))
+    if norm == 0:
+        return truncated
+    return [x / norm for x in truncated]
 
 
 class EmbeddingClient:
@@ -25,4 +46,4 @@ class EmbeddingClient:
         data = response.json()
         # OpenAI-shaped response: data["data"] is a list of {"index": i, "embedding": [...]}
         by_index = sorted(data["data"], key=lambda item: item["index"])
-        return [item["embedding"] for item in by_index]
+        return [_truncate_and_renormalize(item["embedding"]) for item in by_index]

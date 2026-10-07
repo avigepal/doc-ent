@@ -44,3 +44,20 @@ def test_embed_empty_list_returns_empty_without_request():
     client = _client_with_transport(handler)
     assert client.embed([]) == []
     assert calls == []
+
+
+def test_embed_truncates_vectors_wider_than_the_pgvector_column():
+    # Qwen3-Embedding-4B natively outputs 2560 dims; ChunkRecord.embedding
+    # is a fixed Vector(1024) column, so wider vectors must be truncated
+    # to a 1024-dim MRL prefix and renormalized before storage.
+    wide_vector = [1.0] * 2560
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": wide_vector}]})
+
+    client = _client_with_transport(handler)
+    [vector] = client.embed(["text"])
+
+    assert len(vector) == 1024
+    norm = sum(x * x for x in vector) ** 0.5
+    assert abs(norm - 1.0) < 1e-9
