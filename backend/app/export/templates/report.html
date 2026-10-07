@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<!--
+  "Doc/Index" report template for weasyprint — gives pandoc's HTML export
+  a styled title block, colored section rules, chip-style citations, and
+  table styling matching the live dashboard's identity (see
+  dashboard/src/index.css for the source-of-truth color tokens), instead
+  of a bare default look. Pandoc fills in $title$/$subtitle$/$date$/$body$
+  from the source markdown's YAML front matter — see
+  dashboard/src/pages/Ask.tsx:buildMarkdown.
+
+  CSS, not LaTeX, specifically because: (a) chips/badges/colored boxes are
+  native to CSS and require heavy custom macros in LaTeX, (b) this reuses
+  the same color tokens as the live dashboard directly, and (c) reports
+  here are short (a page or a few) where LaTeX's long-document typesetting
+  refinement isn't visible to a reader, while CSS's practical fit for a
+  "modern dashboard" look is.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @page {
+    size: A4;
+    margin: 2.6cm 2.2cm;
+    @bottom-left {
+      content: "DOC/INDEX";
+      font-family: Carlito, sans-serif;
+      font-size: 9px;
+      color: #52555C;
+    }
+    @bottom-right {
+      content: counter(page);
+      font-family: Carlito, sans-serif;
+      font-size: 9px;
+      color: #52555C;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: Carlito, sans-serif;
+    font-size: 11pt;
+    line-height: 1.5;
+    color: #16181D;
+  }
+
+  .title-block {
+    border-top: 2px solid #2B3A67;
+    padding-top: 10px;
+    margin-bottom: 20px;
+  }
+
+  .title-block h1 {
+    font-size: 22pt;
+    margin: 4px 0 2px;
+    color: #16181D;
+  }
+
+  .title-block .wordmark {
+    font-size: 13pt;
+    font-weight: bold;
+    color: #A8681F;
+    letter-spacing: 0.04em;
+  }
+
+  .title-block .subtitle {
+    color: #52555C;
+    margin: 4px 0 0;
+  }
+
+  .title-block .generated {
+    color: #52555C;
+    font-size: 9pt;
+    margin: 2px 0 10px;
+  }
+
+  .title-block .rule {
+    border: none;
+    border-top: 1px solid #D8D5CC;
+    margin: 0;
+  }
+
+  h2 {
+    font-size: 15pt;
+    color: #2B3A67;
+    border-bottom: 1px solid #D8D5CC;
+    padding-bottom: 4px;
+    margin-top: 26px;
+  }
+
+  h3 {
+    font-size: 10pt;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #52555C;
+    margin-top: 16px;
+    margin-bottom: 6px;
+  }
+
+  p { margin: 8px 0; }
+
+  blockquote {
+    border-left: 3px solid #A8681F;
+    margin: 10px 0;
+    padding: 2px 12px;
+    color: #52555C;
+    font-style: italic;
+    background: #F3E3CC;
+  }
+
+  /* Sources lists render as chip-like tags, matching the dashboard's live
+     citation chips (clipped top-right corner, mono text, locator color). */
+  h3 + ol, h3 + ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  h3 + ol li, h3 + ul li {
+    font-family: "DejaVu Sans Mono", monospace;
+    font-size: 9pt;
+    border: 1px solid #D8D5CC;
+    background: #F3E3CC;
+    padding: 3px 8px;
+    clip-path: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 0 100%);
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 10px 0;
+    font-size: 10pt;
+  }
+
+  thead th {
+    background: #2B3A67;
+    color: #F2F1ED;
+    text-align: left;
+    padding: 6px 10px;
+    font-weight: bold;
+  }
+
+  tbody td {
+    padding: 5px 10px;
+    border-bottom: 1px solid #D8D5CC;
+  }
+
+  tbody tr:nth-child(even) {
+    background: #F3F2EE;
+  }
+
+  tr { break-inside: avoid; }
+
+  code {
+    font-family: "DejaVu Sans Mono", monospace;
+    background: #F3E3CC;
+    padding: 1px 4px;
+    font-size: 9.5pt;
+  }
+
+  pre {
+    font-family: "DejaVu Sans Mono", monospace;
+    font-size: 9pt;
+    background: #F3E3CC;
+    border: 1px solid #D8D5CC;
+    padding: 8px 10px;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+</style>
+</head>
+<body>
+
+<div class="title-block">
+  <div class="wordmark">DOC/INDEX — INTELLIGENT REPORT</div>
+  <h1>$title$</h1>
+  $if(subtitle)$
+  <p class="subtitle">$subtitle$</p>
+  $endif$
+  <p class="generated">Generated $date$</p>
+  <hr class="rule">
+</div>
+
+$body$
+
+</body>
+</html>

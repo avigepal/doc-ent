@@ -18,7 +18,7 @@ def test_prepare_adhoc_export_writes_content_and_runs_pandoc(tmp_path: Path):
 
     def fake_runner(cmd):
         captured["cmd"] = cmd
-        Path(cmd[cmd.index("-o") + 1]).write_bytes(b"%PDF-fake")
+        Path(cmd[cmd.index("-o") + 1] if "-o" in cmd else cmd[-1]).write_bytes(b"fake-output")
         return 0
 
     result = prepare_adhoc_export(
@@ -37,7 +37,7 @@ def test_prepare_adhoc_export_writes_content_and_runs_pandoc(tmp_path: Path):
 
 def test_prepare_adhoc_export_sanitizes_dangerous_filename(tmp_path: Path):
     def fake_runner(cmd):
-        Path(cmd[cmd.index("-o") + 1]).write_bytes(b"%PDF-fake")
+        Path(cmd[cmd.index("-o") + 1] if "-o" in cmd else cmd[-1]).write_bytes(b"fake-output")
         return 0
 
     result = prepare_adhoc_export(

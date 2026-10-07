@@ -2,7 +2,6 @@ import { NavLink } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 
 const NAV = [
-  { to: "/", label: "Overview", end: true },
   { to: "/ask", label: "Ask", end: false },
   { to: "/documents", label: "Documents", end: false },
   { to: "/history", label: "History", end: false },

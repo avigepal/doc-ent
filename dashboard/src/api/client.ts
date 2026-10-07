@@ -117,11 +117,17 @@ export const api = {
   // ChatGPT/OpenWebUI-style "+" attach: converts the given files on the
   // spot and answers strictly from them, bypassing the corpus/pgvector
   // entirely. Multipart, not JSON, since it carries binary files.
-  queryUpload: async (question: string, files: File[]): Promise<QueryResult> => {
+  queryUpload: async (
+    question: string,
+    files: File[],
+    options: { author?: string; title?: string } = {},
+  ): Promise<QueryResult> => {
     const token = getToken();
     const form = new FormData();
     form.append("question", question);
     for (const f of files) form.append("files", f);
+    if (options.author) form.append("author", options.author);
+    if (options.title) form.append("title", options.title);
 
     const headers = new Headers();
     if (token) headers.set("Authorization", `Bearer ${token}`);

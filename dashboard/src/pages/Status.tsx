@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api, ApiError } from "../api/client";
-import { buttonSecondary, card, errorText, label, muted } from "../ui";
+import { buttonSecondary, card, errorText, label, muted, pageTitle, tableCell, tableHeader } from "../ui";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -73,7 +73,7 @@ export function Status() {
   return (
     <div>
       <p className={label}>Ingestion</p>
-      <h1 className="font-display mt-1 text-2xl font-semibold tracking-tight">Status</h1>
+      <h1 className={`mt-1 ${pageTitle}`}>Ingestion</h1>
       <p className={`mt-1 ${muted}`}>
         Each step calls the matching endpoint directly. Queue depth and worker health for
         running jobs live on{" "}
@@ -85,7 +85,7 @@ export function Status() {
 
       <ol className="mt-6 flex flex-col gap-0">
         {steps.map((step, i) => (
-          <li key={step.n} className="flex items-center gap-4 border-[var(--line)] py-3" style={i > 0 ? { borderTopWidth: 1 } : undefined}>
+          <li key={step.n} className="flex items-center gap-4 border-[var(--line)] py-2" style={i > 0 ? { borderTopWidth: 1 } : undefined}>
             <span className="font-mono w-7 shrink-0 text-sm text-[var(--index)]">{step.n}</span>
             <span className="flex-1 font-medium">{step.label}</span>
             <button onClick={() => run(step)} disabled={busy !== null} className={buttonSecondary}>
@@ -110,12 +110,18 @@ export function Status() {
           <div className="mt-5 grid grid-cols-2 gap-6">
             <div>
               <p className={label}>By queue</p>
-              <table className="mt-2 w-full border-collapse font-mono text-sm">
+              <table className="mt-2 w-full border-collapse">
+                <thead>
+                  <tr>
+                    <th className={tableHeader}>Queue</th>
+                    <th className={tableHeader}>Count</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {Object.entries(scanResult.by_queue).map(([queue, count]) => (
-                    <tr key={queue} className="border-t border-[var(--line)]">
-                      <td className="py-1.5 pr-2">{queue}</td>
-                      <td className="py-1.5 text-right">{count}</td>
+                    <tr key={queue}>
+                      <td className={`font-mono ${tableCell}`}>{queue}</td>
+                      <td className={`${tableCell} text-right tabular-nums`}>{count}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -123,12 +129,18 @@ export function Status() {
             </div>
             <div>
               <p className={label}>By mime type</p>
-              <table className="mt-2 w-full border-collapse font-mono text-sm">
+              <table className="mt-2 w-full border-collapse">
+                <thead>
+                  <tr>
+                    <th className={tableHeader}>Mime type</th>
+                    <th className={tableHeader}>Count</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {Object.entries(scanResult.by_mime).map(([mime, count]) => (
-                    <tr key={mime} className="border-t border-[var(--line)]">
-                      <td className="truncate py-1.5 pr-2">{mime}</td>
-                      <td className="py-1.5 text-right">{count}</td>
+                    <tr key={mime}>
+                      <td className={`font-mono truncate ${tableCell}`}>{mime}</td>
+                      <td className={`${tableCell} text-right tabular-nums`}>{count}</td>
                     </tr>
                   ))}
                 </tbody>

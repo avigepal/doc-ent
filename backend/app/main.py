@@ -196,6 +196,8 @@ MAX_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024  # 100MB
 async def query_upload_endpoint(
     question: str = Form(...),
     files: list[UploadFile] = File(...),
+    author: str | None = Form(None),  # case-insensitive substring match, same as /query's author
+    title: str | None = Form(None),  # case-insensitive substring match, same as /query's title
     session: Session = Depends(get_session),
 ) -> dict:
     """The dashboard's ChatGPT/OpenWebUI-style "+" attach button: convert
@@ -204,7 +206,13 @@ async def query_upload_endpoint(
     exist only for this one question. Needs a live llama-server (text) —
     unlike /query, this doesn't need embeddings/pgvector at all, since
     there's no retrieval: every uploaded file is included directly.
-    See app/search/adhoc_upload.py."""
+
+    author/title give this the same filtering /query has: each attached
+    file's own extracted metadata is checked against the filter, and a
+    non-matching file is excluded from the answer — this is "which of my
+    attached files" rather than "which of the corpus", but the filter
+    semantics (case-insensitive substring) are identical either way. See
+    app/search/adhoc_upload.py."""
     from app.search.adhoc_upload import convert_upload_to_chunks
     from app.search.query import run_query
     from app.tasks.correlate import _correlation_report_to_dict, _text_llm
@@ -222,7 +230,17 @@ async def query_upload_endpoint(
                 status_code=400,
                 detail=f"uploads exceed {MAX_UPLOAD_TOTAL_BYTES // (1024 * 1024)}MB total",
             )
-        all_chunks.extend(convert_upload_to_chunks(f.filename or "upload", content, f.content_type))
+        all_chunks.extend(
+            convert_upload_to_chunks(
+                f.filename or "upload", content, f.content_type, author_filter=author, title_filter=title
+            )
+        )
+
+    if not all_chunks and (author or title):
+        raise HTTPException(
+            status_code=400,
+            detail="no attached file matched the given author/title filter",
+        )
 
     # similarity_threshold=0.0: uploaded chunks are always scored 1.0 (explicitly
     # provided by the user) and should never be filtered out as "not found".
@@ -241,6 +259,8 @@ async def query_upload_endpoint(
         session,
         question=question,
         result=payload,
+        author=author,
+        title=title,
         attached_filenames=[f.filename or "upload" for f in files],
     )
     return {**payload, "history_id": history_id}

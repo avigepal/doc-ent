@@ -5,12 +5,14 @@ import pytest
 from app.export.pandoc_export import EXPORT_FORMATS, export_markdown
 
 
-def test_export_markdown_builds_correct_pandoc_command_for_pdf(tmp_path: Path):
-    captured = {}
+def test_export_markdown_builds_pandoc_then_weasyprint_commands_for_pdf(tmp_path: Path):
+    captured = []
 
     def fake_runner(cmd):
-        captured["cmd"] = cmd
-        Path(cmd[cmd.index("-o") + 1]).write_bytes(b"%PDF-fake")
+        captured.append(cmd)
+        # pandoc writes the intermediate .html; weasyprint writes the .pdf —
+        # fake both so downstream Path.exists()/output checks pass.
+        Path(cmd[cmd.index("-o") + 1] if "-o" in cmd else cmd[-1]).write_bytes(b"fake-output")
         return 0
 
     source = tmp_path / "summary.md"
@@ -21,15 +23,41 @@ def test_export_markdown_builds_correct_pandoc_command_for_pdf(tmp_path: Path):
 
     assert result.suffix == ".pdf"
     assert result.exists()
-    cmd = captured["cmd"]
-    assert cmd[0] == "pandoc"
-    assert str(source) in cmd
-    assert "--pdf-engine" in cmd
+    assert len(captured) == 2
+
+    pandoc_cmd = captured[0]
+    assert pandoc_cmd[0] == "pandoc"
+    assert str(source) in pandoc_cmd
+    assert pandoc_cmd[pandoc_cmd.index("-o") + 1].endswith(".html")
+
+    weasyprint_cmd = captured[1]
+    assert weasyprint_cmd[0] == "weasyprint"
+    assert weasyprint_cmd[1].endswith(".html")
+    assert weasyprint_cmd[2] == str(result)
+
+
+def test_export_markdown_raises_if_weasyprint_step_fails(tmp_path: Path):
+    calls = []
+
+    def fake_runner(cmd):
+        calls.append(cmd)
+        if cmd[0] == "pandoc":
+            Path(cmd[cmd.index("-o") + 1]).write_bytes(b"<html></html>")
+            return 0
+        return 1  # weasyprint fails
+
+    source = tmp_path / "summary.md"
+    source.write_text("# x")
+
+    with pytest.raises(RuntimeError, match="weasyprint"):
+        export_markdown(source, tmp_path / "exports", fmt="pdf", runner=fake_runner)
+
+    assert len(calls) == 2
 
 
 def test_export_markdown_defaults_to_pdf(tmp_path: Path):
     def fake_runner(cmd):
-        Path(cmd[cmd.index("-o") + 1]).write_bytes(b"%PDF-fake")
+        Path(cmd[cmd.index("-o") + 1] if "-o" in cmd else cmd[-1]).write_bytes(b"fake-output")
         return 0
 
     source = tmp_path / "summary.md"

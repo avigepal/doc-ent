@@ -5,7 +5,6 @@ import { Ask } from "./pages/Ask";
 import { Documents } from "./pages/Documents";
 import { History } from "./pages/History";
 import { Login } from "./pages/Login";
-import { Overview } from "./pages/Overview";
 import { Status } from "./pages/Status";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -35,14 +34,14 @@ function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
-      <Route path="/" element={guarded(<Overview />)} />
       <Route path="/ask" element={guarded(<Ask />)} />
       <Route path="/documents" element={guarded(<Documents />)} />
       <Route path="/history" element={guarded(<History />)} />
       <Route path="/ingestion" element={guarded(<Status />)} />
-      {/* Old bookmarks from the two-page layout. */}
+      {/* Old bookmarks from the two-page layout, and the removed Overview page. */}
       <Route path="/status" element={<Navigate to="/ingestion" replace />} />
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="/" element={<Navigate to="/ask" replace />} />
+      <Route path="*" element={<Navigate to="/ask" replace />} />
     </Routes>
   );
 }

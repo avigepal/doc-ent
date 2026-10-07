@@ -11,15 +11,19 @@ RUN npm run build
 # ---- stage 2: the API image ----
 FROM python:3.11-slim
 
-# texlive-xetex pulls a few hundred MB (full LaTeX engine) but is the
-# reliable apt-installable path for pandoc's PDF export (xelatex) — see
-# app/export/pandoc_export.py's _PDF_ENGINE. Confirmed via live testing
-# that /export 500s without this: pandoc was missing entirely before.
-# fonts-crosextra-carlito/fonts-dejavu-core give the report template
-# (app/export/templates/report.latex) a modern sans body font instead of
-# LaTeX's default Computer Modern look.
+# PDF export is pandoc (markdown->HTML) + weasyprint (HTML+CSS->PDF) — see
+# app/export/pandoc_export.py and app/export/templates/report.html. This
+# replaced a texlive-xetex/LaTeX pipeline that alone took ~29 minutes to
+# apt-install; weasyprint's system libs below are a fraction of that.
+# fonts-crosextra-carlito/fonts-dejavu-core give the report a modern sans
+# body font, reused by both the PDF (report.html) and docx
+# (reference.docx) templates.
+# libgdk-pixbuf-2.0-0 (dash before "2.0"): Debian renamed this package in
+# trixie from the older libgdk-pixbuf2.0-0 name used on bookworm/older.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libmagic1 curl ca-certificates pandoc texlive-xetex \
+    libmagic1 curl ca-certificates pandoc \
+    libpango-1.0-0 libpangocairo-1.0-0 libcairo2 libgdk-pixbuf-2.0-0 \
+    shared-mime-info fontconfig \
     fonts-crosextra-carlito fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 

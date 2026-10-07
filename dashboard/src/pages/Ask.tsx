@@ -9,9 +9,29 @@ function yamlEscape(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+/** The backend formats correlation findings as lines like "A vs B: r=0.92"
+ * (see backend/app/search/correlate.py:format_correlation_matrix). Parses
+ * those into a real markdown table — which pandoc/weasyprint render as a
+ * styled <table> in the exported report — instead of dumping the raw text
+ * into a code block. Falls back to the original text unchanged if nothing
+ * matches (e.g. the "No strong correlations found" message). */
+function correlationTable(summary: string): string {
+  const rowPattern = /^(.+?) vs (.+?): r=(-?\d+\.\d+)$/;
+  const rows = summary
+    .split("\n")
+    .map((line) => line.match(rowPattern))
+    .filter((m): m is RegExpMatchArray => m !== null);
+
+  if (rows.length === 0) return `\n${summary}\n`;
+
+  let table = "\n| Variable A | Variable B | r |\n|---|---|---|\n";
+  table += rows.map((m) => `| ${m[1]} | ${m[2]} | ${m[3]} |`).join("\n");
+  return `${table}\n`;
+}
+
 /** Builds the exported report's markdown source. A YAML front-matter
  * block (title/subtitle/date) drives the "Doc/Index" styled title
- * block in both the PDF (report.latex) and docx (reference.docx)
+ * block in both the PDF (report.html) and docx (reference.docx)
  * templates — see backend/app/export/templates/ — instead of a plain
  * H1, so the exported file reads as a generated report rather than a
  * raw markdown dump. */
@@ -42,7 +62,7 @@ function buildMarkdown(result: QueryResult): string {
   }
   if (result.statistical) {
     md += `\n## Statistical findings\n\n${result.statistical.answer}\n`;
-    md += `\n\`\`\`\n${result.statistical.correlation_summary}\n\`\`\`\n`;
+    md += correlationTable(result.statistical.correlation_summary);
   }
   return md;
 }
@@ -137,9 +157,6 @@ export function Ask() {
   const [question, setQuestion] = useState("");
   const [folders, setFolders] = useState<FolderStatus[]>([]);
   const [selectedFolders, setSelectedFolders] = useState<string[]>([]);
-  const [authorFilter, setAuthorFilter] = useState("");
-  const [titleFilter, setTitleFilter] = useState("");
-  const [showFilters, setShowFilters] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [result, setResult] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -199,11 +216,7 @@ export function Ask() {
       const r =
         attachedFiles.length > 0
           ? await api.queryUpload(question, attachedFiles)
-          : await api.query(question, {
-              folders: selectedFolders,
-              author: authorFilter.trim() || undefined,
-              title: titleFilter.trim() || undefined,
-            });
+          : await api.query(question, { folders: selectedFolders });
       setResult(r);
       setAttachedFiles([]);
     } catch (err) {
@@ -227,7 +240,7 @@ export function Ask() {
   };
 
   return (
-    <div>
+    <div className="pb-36">
       <p className={label}>Query</p>
       <h1 className="font-display mt-1 text-2xl font-semibold tracking-tight">Ask</h1>
       <p className={`mt-1 ${muted}`}>
@@ -246,32 +259,38 @@ export function Ask() {
         />
 
         <div className="min-w-0">
-          <button
-            type="button"
-            onClick={() => setShowFilters((v) => !v)}
-            className={`mb-2 font-mono text-xs ${muted} hover:text-[var(--ink)]`}
-          >
-            {showFilters ? "− hide filters" : "+ filter by author / title"}
-          </button>
-          {showFilters && (
-            <div className="mb-3 flex gap-2">
-              <input
-                type="text"
-                placeholder="author contains…"
-                value={authorFilter}
-                onChange={(e) => setAuthorFilter(e.target.value)}
-                className={`${input} flex-1 text-sm`}
-              />
-              <input
-                type="text"
-                placeholder="title contains…"
-                value={titleFilter}
-                onChange={(e) => setTitleFilter(e.target.value)}
-                className={`${input} flex-1 text-sm`}
-              />
-            </div>
-          )}
+          {error && <p className={`mb-3 ${errorText}`}>{error}</p>}
 
+          {result && (
+            <ResultCard
+              result={result}
+              actions={
+                <>
+                  <span className={`font-mono text-xs ${muted}`}>Download</span>
+                  {(["pdf", "docx"] as const).map((fmt) => (
+                    <button
+                      key={fmt}
+                      onClick={() => handleDownload(fmt)}
+                      disabled={downloading !== null}
+                      className={buttonSecondary}
+                    >
+                      {downloading === fmt ? "…" : fmt.toUpperCase()}
+                    </button>
+                  ))}
+                </>
+              }
+            />
+          )}
+        </div>
+      </div>
+
+      {/* Composer pinned to the bottom of the viewport, ChatGPT/Gemini-style
+          — everything above (scope, filters, the answer) scrolls normally in
+          the page; this bar stays put so you can always ask the next
+          question without scrolling back down. Offset matches Sidebar's
+          lg:w-[220px] desktop column so it doesn't run under it. */}
+      <div className="fixed right-0 bottom-0 left-0 border-t border-[var(--line)] bg-[var(--paper)] px-6 py-4 lg:left-[220px]">
+        <div className="mx-auto max-w-7xl">
           {attachedFiles.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1.5">
               {attachedFiles.map((f, i) => (
@@ -320,7 +339,7 @@ export function Ask() {
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
                 autoFocus
-                className={`${input} w-full`}
+                className={`${input} h-[42px] w-full`}
               />
               {loading && (
                 <div className="pointer-events-none absolute right-0 bottom-0 left-0 h-[2px] overflow-hidden rounded-b-md">
@@ -328,33 +347,14 @@ export function Ask() {
                 </div>
               )}
             </div>
-            <button type="submit" disabled={!question || loading} className={button}>
+            <button
+              type="submit"
+              disabled={!question || loading}
+              className={`${button} flex h-[42px] shrink-0 items-center justify-center`}
+            >
               {loading ? "Asking…" : "Ask"}
             </button>
           </form>
-
-          {error && <p className={`mt-3 ${errorText}`}>{error}</p>}
-
-          {result && (
-            <ResultCard
-              result={result}
-              actions={
-                <>
-                  <span className={`font-mono text-xs ${muted}`}>Download</span>
-                  {(["pdf", "docx"] as const).map((fmt) => (
-                    <button
-                      key={fmt}
-                      onClick={() => handleDownload(fmt)}
-                      disabled={downloading !== null}
-                      className={buttonSecondary}
-                    >
-                      {downloading === fmt ? "…" : fmt.toUpperCase()}
-                    </button>
-                  ))}
-                </>
-              }
-            />
-          )}
         </div>
       </div>
     </div>
