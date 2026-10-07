@@ -21,7 +21,11 @@ from app.summarization.chunker import chunk_markdown
 from app.summarization.llm_client import LlamaClient
 from app.summarization.map_reduce import map_summarize, reduce_summaries
 
-_llm = LlamaClient(base_url=settings.llama_text_url)
+_llm = LlamaClient(
+    base_url=settings.llama_text_url,
+    model=settings.llama_text_model,
+    api_key=settings.llama_text_api_key or None,
+)
 
 
 @celery_app.task(name="app.tasks.summarize.summarize_file", bind=True, max_retries=3, default_retry_delay=30)

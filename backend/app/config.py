@@ -17,6 +17,16 @@ class Settings(BaseSettings):
     llama_vision_url: str = "http://llama-vision:8080"
     llama_embed_url: str = "http://llama-embed:8080"
 
+    # Empty for a local llama-server (no auth needed). Set to call a
+    # remote OpenAI-compatible endpoint instead.
+    llama_text_api_key: str = ""
+    llama_vision_api_key: str = ""
+    llama_embed_api_key: str = ""
+
+    llama_text_model: str = "local"
+    llama_vision_model: str = "local"
+    llama_embed_model: str = "local"
+
     # Set in the Docker image (see backend/Dockerfile's dashboard-build
     # stage); left empty for local `uvicorn` dev, where main.py falls
     # back to computing dashboard/dist's path relative to this repo.

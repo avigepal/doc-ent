@@ -35,8 +35,16 @@ from app.search.pgvector_retrieval import retrieve_top_k
 from app.search.query import run_query
 from app.summarization.llm_client import LlamaClient
 
-_embedder = EmbeddingClient(base_url=settings.llama_embed_url)
-_text_llm = LlamaClient(base_url=settings.llama_text_url)
+_embedder = EmbeddingClient(
+    base_url=settings.llama_embed_url,
+    model=settings.llama_embed_model,
+    api_key=settings.llama_embed_api_key or None,
+)
+_text_llm = LlamaClient(
+    base_url=settings.llama_text_url,
+    model=settings.llama_text_model,
+    api_key=settings.llama_text_api_key or None,
+)
 _raw_dir = str(Path(settings.data_dir) / "raw")
 
 
