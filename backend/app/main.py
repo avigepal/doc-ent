@@ -325,6 +325,83 @@ def export_endpoint(payload: ExportRequest, session: Session = Depends(get_sessi
     )
 
 
+@app.get("/history/queries", dependencies=[Depends(require_bearer_token)])
+def history_queries_endpoint(
+    limit: int = 50, offset: int = 0, session: Session = Depends(get_session)
+) -> dict:
+    """Paged query history, newest first. Summary shape — call
+    /history/queries/{id} for the stored answer."""
+    from app.history.serialization import query_record_to_summary
+    from app.history.store import list_queries
+
+    records = list_queries(session, limit=min(limit, 200), offset=offset)
+    return {"queries": [query_record_to_summary(r) for r in records]}
+
+
+@app.get("/history/queries/{history_id}", dependencies=[Depends(require_bearer_token)])
+def history_query_detail_endpoint(
+    history_id: int, session: Session = Depends(get_session)
+) -> dict:
+    """Full stored snapshot, so the History page can re-render a past
+    result without re-running the model."""
+    from app.history.serialization import query_record_to_detail
+    from app.history.store import get_query
+
+    record = get_query(session, history_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="no such history entry")
+    return query_record_to_detail(record)
+
+
+@app.delete("/history/queries/{history_id}", dependencies=[Depends(require_bearer_token)])
+def history_query_delete_endpoint(
+    history_id: int, session: Session = Depends(get_session)
+) -> dict:
+    from app.history.store import delete_query
+
+    if not delete_query(session, history_id):
+        raise HTTPException(status_code=404, detail="no such history entry")
+    return {"deleted": history_id}
+
+
+@app.get("/history/exports", dependencies=[Depends(require_bearer_token)])
+def history_exports_endpoint(
+    limit: int = 50, offset: int = 0, session: Session = Depends(get_session)
+) -> dict:
+    from app.history.serialization import export_record_to_dict
+    from app.history.store import list_exports
+
+    records = list_exports(session, limit=min(limit, 200), offset=offset)
+    return {"exports": [export_record_to_dict(r) for r in records]}
+
+
+@app.get("/history/exports/{export_id}/download", dependencies=[Depends(require_bearer_token)])
+def history_export_download_endpoint(
+    export_id: int, session: Session = Depends(get_session)
+) -> FileResponse:
+    """Re-streams a previously generated export from disk. Exports live
+    under DATA_DIR/exports, so this is a real re-download rather than a
+    re-render — which is why history is in Postgres and not localStorage."""
+    from app.history.store import get_export
+
+    record = get_export(session, export_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="no such export")
+
+    path = Path(record.stored_path)
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="exported file is no longer on disk — re-run the export to regenerate it",
+        )
+
+    return FileResponse(
+        path,
+        media_type=_EXPORT_MEDIA_TYPES.get(record.fmt, "application/octet-stream"),
+        filename=path.name,
+    )
+
+
 # Phase 7: serve the built React dashboard as static files so the whole
 # app is one process, one port. Registered last so it doesn't shadow the
 # API routes above (FastAPI matches routes in registration order). In
