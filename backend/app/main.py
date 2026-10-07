@@ -157,15 +157,35 @@ def create_folder_endpoint(payload: CreateFolderRequest) -> dict:
 
 
 @app.post("/query", dependencies=[Depends(require_bearer_token)])
-def query_endpoint(payload: QuestionRequest) -> dict:
+def query_endpoint(payload: QuestionRequest, session: Session = Depends(get_session)) -> dict:
     """Phase 4: the single unified entry point the dashboard calls — one
     retrieval, reused for a grounded answer AND cross-document/statistical
     correlation (whichever apply). Runs synchronously (request/response).
     Needs a live llama-server (text + embeddings) and populated pgvector
-    embeddings. See app/tasks/correlate.py:query."""
+    embeddings. See app/tasks/correlate.py:query.
+
+    The result is recorded to query_history server-side (not in the
+    browser) so it survives the tab closing, and `history_id` comes back
+    so a follow-up /export can link to this query."""
+    from app.history.store import record_query
     from app.tasks.correlate import query
 
-    return query(payload.question, k=payload.k, folders=payload.folders, author=payload.author, title=payload.title)
+    result = query(
+        payload.question,
+        k=payload.k,
+        folders=payload.folders,
+        author=payload.author,
+        title=payload.title,
+    )
+    history_id = record_query(
+        session,
+        question=payload.question,
+        result=result,
+        folders=payload.folders,
+        author=payload.author,
+        title=payload.title,
+    )
+    return {**result, "history_id": history_id}
 
 
 MAX_UPLOAD_FILES = 50
@@ -176,6 +196,7 @@ MAX_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024  # 100MB
 async def query_upload_endpoint(
     question: str = Form(...),
     files: list[UploadFile] = File(...),
+    session: Session = Depends(get_session),
 ) -> dict:
     """The dashboard's ChatGPT/OpenWebUI-style "+" attach button: convert
     the uploaded file(s) on the spot and answer strictly from them —
@@ -206,13 +227,23 @@ async def query_upload_endpoint(
     # similarity_threshold=0.0: uploaded chunks are always scored 1.0 (explicitly
     # provided by the user) and should never be filtered out as "not found".
     result = run_query(question, all_chunks, tables={}, llm=_text_llm, similarity_threshold=0.0)
-    return {
+
+    from app.history.store import record_query
+
+    payload = {
         "question": result.question,
         "answer": result.answer,
         "sources": result.sources,
         "grounded": result.grounded,
         **_correlation_report_to_dict(result),
     }
+    history_id = record_query(
+        session,
+        question=question,
+        result=payload,
+        attached_filenames=[f.filename or "upload" for f in files],
+    )
+    return {**payload, "history_id": history_id}
 
 
 @app.post("/ask", dependencies=[Depends(require_bearer_token)])
@@ -242,6 +273,9 @@ class ExportRequest(BaseModel):
     content: str | None = None
     filename: str = "export"
     fmt: str = "pdf"
+    # Set by the dashboard from the /query response so the export shows up
+    # on the History page linked to the query that produced it.
+    history_id: int | None = None
 
 
 _EXPORT_MEDIA_TYPES = {
@@ -252,7 +286,7 @@ _EXPORT_MEDIA_TYPES = {
 
 
 @app.post("/export", dependencies=[Depends(require_bearer_token)])
-def export_endpoint(payload: ExportRequest) -> FileResponse:
+def export_endpoint(payload: ExportRequest, session: Session = Depends(get_session)) -> FileResponse:
     """Phase 5/7: export to PDF (default) / docx / json via pandoc and
     stream the file straight back as a download — no separate download
     step or endpoint. Needs pandoc + a PDF engine (tectonic/xelatex)
@@ -273,6 +307,16 @@ def export_endpoint(payload: ExportRequest) -> FileResponse:
         output_path = export_markdown(source, exports_root / Path(payload.relative_path).parent, fmt=payload.fmt)
     else:
         raise HTTPException(status_code=400, detail="either content or relative_path is required")
+
+    from app.history.store import record_export
+
+    record_export(
+        session,
+        query_history_id=payload.history_id,
+        filename=payload.filename,
+        fmt=payload.fmt,
+        stored_path=output_path,
+    )
 
     return FileResponse(
         output_path,
