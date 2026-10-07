@@ -1,17 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, ApiError, downloadExport, type FolderStatus, type QueryResult } from "../api/client";
-import { button, buttonSecondary, card, errorText, input, label, muted } from "../ui";
+import { ResultCard, shortenSource } from "../components/ResultCard";
+import { button, buttonSecondary, errorText, input, label, muted } from "../ui";
 
 const FOLDER_POLL_MS = 4000;
-
-/** Strips everything up to and including "/raw/" so citations show a
- * readable "contracts/q2_update.txt" instead of the full container path
- * "/data/pipeline/raw/contracts/q2_update.txt". */
-function shortenSource(path: string): string {
-  const marker = "/raw/";
-  const idx = path.indexOf(marker);
-  return idx === -1 ? path : path.slice(idx + marker.length);
-}
 
 function yamlEscape(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -59,25 +51,12 @@ function slugForFilename(question: string): string {
   return question.trim().slice(0, 60) || "query-result";
 }
 
-type DerivedState = "processing" | "attention" | "ready" | "pending" | "empty";
-
-function deriveState(f: FolderStatus): DerivedState {
-  if (f.processing) return "processing";
-  if (f.has_failures) return "attention";
-  if (f.total_files === 0) return "empty";
-  if (f.summarized === f.total_files) return "ready";
-  return "pending";
-}
-
-const STATE_META: Record<DerivedState, { dot: string; text: string; pulse?: boolean }> = {
-  processing: { dot: "bg-[var(--index)]", text: "Processing", pulse: true },
-  attention: { dot: "bg-[var(--danger)]", text: "Needs attention" },
-  ready: { dot: "bg-[var(--signal)]", text: "Ready" },
-  pending: { dot: "bg-[var(--locator)]", text: "Pending" },
-  empty: { dot: "bg-[var(--line)]", text: "Empty" },
-};
-
-function FolderSidebar({
+/** Horizontal scope strip replacing the old folder sidebar column now that
+ * the app has a real sidebar (see Sidebar.tsx) — folder scoping is a
+ * per-query filter, not navigation, so it lives above the question input
+ * instead of beside it. Same folders/selected/onToggle/onCreated state and
+ * polling as before; only the layout changed. */
+function ScopeBar({
   folders,
   selected,
   onToggle,
@@ -109,94 +88,47 @@ function FolderSidebar({
   };
 
   return (
-    <aside className="w-full shrink-0 lg:w-56">
-      <p className={label}>Folders</p>
+    <div className="mb-6">
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-[var(--line)] pb-3">
+        <span className={`${label} mr-1`}>Scope</span>
+        {folders.map((f) => {
+          const isSelected = selected.includes(f.name);
+          return (
+            <button
+              key={f.name}
+              type="button"
+              onClick={() => onToggle(f.name)}
+              className={`rounded border px-2 py-0.5 text-xs transition-colors ${
+                isSelected
+                  ? "border-[var(--index)] bg-[var(--index-soft)] text-[var(--index)]"
+                  : "border-[var(--line)] text-[var(--ink-soft)] hover:text-[var(--ink)]"
+              }`}
+            >
+              {f.name}
+              {f.processing && <span className="ml-1 text-[var(--locator)]">●</span>}
+              {f.has_failures && <span className="ml-1 text-[var(--danger)]">●</span>}
+            </button>
+          );
+        })}
+        {folders.length === 0 && <span className={muted}>No folders yet</span>}
 
-      {folders.length === 0 ? (
-        <p className={`mt-2 text-sm ${muted}`}>
-          No folders yet — create one below, or drop a folder of files into{" "}
-          <code className="font-mono">raw/</code> on the server (SSH/SFTP/FileZilla work directly
-          — it's just a directory).
-        </p>
-      ) : (
-        <ul className="mt-2 flex flex-col gap-1">
-          {folders.map((f) => {
-            const state = deriveState(f);
-            const meta = STATE_META[state];
-            const active = selected.includes(f.name);
-            return (
-              <li key={f.name}>
-                <button
-                  type="button"
-                  onClick={() => onToggle(f.name)}
-                  className={`flex w-full items-center gap-2 rounded-md border-l-2 px-2.5 py-2 text-left text-sm transition-colors ${
-                    active
-                      ? "border-[var(--index)] bg-[var(--index-soft)]"
-                      : "border-transparent hover:bg-[var(--index-soft)]/40"
-                  }`}
-                >
-                  <span
-                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot} ${meta.pulse ? "animate-pulse" : ""}`}
-                    title={meta.text}
-                  />
-                  <span className="flex-1 truncate">{f.name}</span>
-                  <span className="font-mono shrink-0 text-xs text-[var(--ink-soft)]">
-                    {f.summarized}/{f.total_files}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      {folders.length > 0 && selected.length === 0 && (
-        <p className={`mt-2 text-xs ${muted}`}>whole corpus</p>
-      )}
-
-      <form onSubmit={handleCreate} className="mt-4 flex gap-1.5 border-t border-[var(--line)] pt-3">
-        <input
-          type="text"
-          placeholder="new folder"
-          value={newFolderName}
-          onChange={(e) => setNewFolderName(e.target.value)}
-          className={`${input} min-w-0 flex-1 text-sm`}
-        />
-        <button type="submit" disabled={!newFolderName.trim() || creating} className={buttonSecondary}>
-          {creating ? "…" : "+"}
-        </button>
-      </form>
+        <form onSubmit={handleCreate} className="ml-auto flex items-center gap-1.5">
+          <input
+            type="text"
+            placeholder="new folder"
+            value={newFolderName}
+            onChange={(e) => setNewFolderName(e.target.value)}
+            className={`${input} w-32 text-sm`}
+          />
+          <button type="submit" disabled={!newFolderName.trim() || creating} className={buttonSecondary}>
+            {creating ? "…" : "+"}
+          </button>
+        </form>
+      </div>
       {createError && <p className={`mt-1 ${errorText}`}>{createError}</p>}
-      <p className={`mt-1 text-xs ${muted}`}>
-        Creates raw/&lt;name&gt; on the server — put files in it via SSH/SFTP or the + below.
-      </p>
-    </aside>
-  );
-}
-
-/** Signature element: sources rendered as index-tab stubs — a locator
- * number, a clipped corner (literal "cut card" shape), and a colored
- * edge keyed to evidence type. This is the one visual idea the whole
- * app repeats, because grounded citations are the actual product. */
-function SourceTabs({ sources, accent = "index" }: { sources: string[]; accent?: "index" | "locator" }) {
-  const edgeColor = accent === "index" ? "var(--index)" : "var(--locator)";
-  return (
-    <div className="mt-2 flex flex-wrap gap-2">
-      {sources.map((s, i) => (
-        <div
-          key={i}
-          title={s}
-          className="group flex items-center gap-2 border-y border-r border-[var(--line)] bg-[var(--paper)] py-1.5 pr-3 pl-2.5 text-sm transition-transform hover:-translate-y-0.5 hover:shadow-[0_2px_0_var(--line)]"
-          style={{
-            borderLeft: `3px solid ${edgeColor}`,
-            clipPath: "polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%)",
-          }}
-        >
-          <span className="font-mono text-xs" style={{ color: edgeColor }}>
-            {String(i + 1).padStart(2, "0")}
-          </span>
-          <span className="max-w-[16rem] truncate">{shortenSource(s)}</span>
-        </div>
-      ))}
+      {folders.length > 0 && selected.length === 0 && (
+        <p className={`mt-1 text-xs ${muted}`}>whole corpus</p>
+      )}
     </div>
   );
 }
@@ -286,7 +218,7 @@ export function Ask() {
     setDownloading(fmt);
     setError(null);
     try {
-      await downloadExport(buildMarkdown(result), slugForFilename(result.question), fmt);
+      await downloadExport(buildMarkdown(result), slugForFilename(result.question), fmt, result.history_id);
     } catch (err) {
       setError(err instanceof ApiError ? `${err.status}: ${err.message}` : String(err));
     } finally {
@@ -305,15 +237,15 @@ export function Ask() {
         corpus. Needs a live llama-server.
       </p>
 
-      <div className="mt-6 flex flex-col gap-8 lg:flex-row">
-        <FolderSidebar
+      <div className="mt-6">
+        <ScopeBar
           folders={folders}
           selected={selectedFolders}
           onToggle={toggleFolder}
           onCreated={fetchFolders}
         />
 
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0">
           <button
             type="button"
             onClick={() => setShowFilters((v) => !v)}
@@ -404,50 +336,24 @@ export function Ask() {
           {error && <p className={`mt-3 ${errorText}`}>{error}</p>}
 
           {result && (
-            <div className={card}>
-              {!result.grounded && (
-                <p className={`mb-2 font-mono text-xs ${muted}`}>not grounded — nothing matched closely enough</p>
-              )}
-              <p>{result.answer}</p>
-              {result.sources.length > 0 && (
+            <ResultCard
+              result={result}
+              actions={
                 <>
-                  <p className={`mt-4 ${label}`}>Sources</p>
-                  <SourceTabs sources={result.sources} accent="index" />
+                  <span className={`font-mono text-xs ${muted}`}>Download</span>
+                  {(["pdf", "docx"] as const).map((fmt) => (
+                    <button
+                      key={fmt}
+                      onClick={() => handleDownload(fmt)}
+                      disabled={downloading !== null}
+                      className={buttonSecondary}
+                    >
+                      {downloading === fmt ? "…" : fmt.toUpperCase()}
+                    </button>
+                  ))}
                 </>
-              )}
-
-              {result.cross_doc && (
-                <div className="mt-6 border-t border-[var(--line)] pt-5">
-                  <p className={label}>Cross-document findings</p>
-                  <p className="mt-2">{result.cross_doc.answer}</p>
-                  <SourceTabs sources={result.cross_doc.sources} accent="index" />
-                </div>
-              )}
-
-              {result.statistical && (
-                <div className="mt-6 border-t border-[var(--line)] pt-5">
-                  <p className={label}>Statistical findings</p>
-                  <p className="mt-2">{result.statistical.answer}</p>
-                  <pre className="font-mono mt-2 whitespace-pre-wrap rounded border border-[var(--line)] bg-[var(--locator-soft)] p-3 text-xs">
-                    {result.statistical.correlation_summary}
-                  </pre>
-                </div>
-              )}
-
-              <div className="mt-6 flex items-center gap-2 border-t border-[var(--line)] pt-5">
-                <span className={`font-mono text-xs ${muted}`}>Download</span>
-                {(["pdf", "docx"] as const).map((fmt) => (
-                  <button
-                    key={fmt}
-                    onClick={() => handleDownload(fmt)}
-                    disabled={downloading !== null}
-                    className={buttonSecondary}
-                  >
-                    {downloading === fmt ? "…" : fmt.toUpperCase()}
-                  </button>
-                ))}
-              </div>
-            </div>
+              }
+            />
           )}
         </div>
       </div>
