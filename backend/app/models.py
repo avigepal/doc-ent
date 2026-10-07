@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -56,4 +57,48 @@ class ChunkRecord(Base):
     file_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("files.id", ondelete="CASCADE"))
     text: Mapped[str] = mapped_column(Text, nullable=False)
     embedding = mapped_column(Vector(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class QueryHistoryRecord(Base):
+    """One row per query run through /query or /query/upload. Stores the
+    full result, not just the question: re-running a query against a local
+    LLM is slow, so the History page restores the stored answer instead."""
+
+    __tablename__ = "query_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    sources: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    grounded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    cross_doc: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    statistical: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # filter_* rather than author/title: `files` already has title/author
+    # columns meaning document-intrinsic metadata, and an unprefixed name
+    # here would be ambiguous in any query joining both tables.
+    filter_folders: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    filter_author: Mapped[str | None] = mapped_column(Text, nullable=True)
+    filter_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Non-empty only for "+"-attach queries, which bypass the corpus.
+    attached_filenames: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ExportHistoryRecord(Base):
+    __tablename__ = "export_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # SET NULL, not CASCADE: deleting a query shouldn't destroy the record
+    # of a file that still exists on disk and is still downloadable.
+    query_history_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("query_history.id", ondelete="SET NULL"), nullable=True
+    )
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
+    fmt: Mapped[str] = mapped_column(String, nullable=False)
+    stored_path: Mapped[str] = mapped_column(Text, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

@@ -46,3 +46,31 @@ CREATE TABLE IF NOT EXISTS chunks (
     embedding  vector(1024),   -- adjust to match the embedding model's dimension
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS query_history (
+    id BIGSERIAL PRIMARY KEY,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    sources JSONB NOT NULL DEFAULT '[]'::jsonb,
+    grounded BOOLEAN NOT NULL DEFAULT FALSE,
+    cross_doc JSONB,
+    statistical JSONB,
+    filter_folders JSONB NOT NULL DEFAULT '[]'::jsonb,
+    filter_author TEXT,
+    filter_title TEXT,
+    attached_filenames JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS export_history (
+    id BIGSERIAL PRIMARY KEY,
+    query_history_id BIGINT REFERENCES query_history(id) ON DELETE SET NULL,
+    filename TEXT NOT NULL,
+    fmt VARCHAR NOT NULL,
+    stored_path TEXT NOT NULL,
+    size_bytes BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_query_history_created_at ON query_history (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_export_history_created_at ON export_history (created_at DESC);
