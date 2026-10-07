@@ -402,6 +402,14 @@ def history_export_download_endpoint(
     )
 
 
+@app.get("/stats", dependencies=[Depends(require_bearer_token)])
+def stats_endpoint(session: Session = Depends(get_session)) -> dict:
+    """Overview metrics for the dashboard home page."""
+    from app.stats_query import get_overview_stats
+
+    return get_overview_stats(session, Path(settings.data_dir) / "raw")
+
+
 # Phase 7: serve the built React dashboard as static files so the whole
 # app is one process, one port. Registered last so it doesn't shadow the
 # API routes above (FastAPI matches routes in registration order). In
