@@ -1,21 +1,36 @@
-// Shared class strings for the "archive / index-card" identity — see
-// index.css for the token definitions these arbitrary-value classes
-// reference. Centralized here so the look doesn't drift between pages.
+// Shared class strings for the dense "console" look — see index.css for
+// the token definitions these arbitrary-value classes reference. The
+// tokens themselves are unchanged (dark mode is defined entirely through
+// them); what changed here is sizing and spacing, tightened from the
+// original airy card layout toward an information-dense dashboard.
+//
+// Centralized so the look doesn't drift between pages: revise here, not
+// per-page.
 
 export const input =
-  "rounded-md border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5 text-[var(--ink)] placeholder:text-[var(--ink-soft)] focus:border-[var(--index)] focus:outline-none transition-colors";
+  "rounded border border-[var(--line)] bg-[var(--paper)] px-2.5 py-1.5 text-[13px] text-[var(--ink)] placeholder:text-[var(--ink-soft)] focus:border-[var(--index)] focus:outline-none transition-colors";
 
 export const button =
-  "rounded-md bg-[var(--index)] px-4 py-2.5 font-medium text-[var(--paper)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 transition-opacity";
+  "rounded bg-[var(--index)] px-3 py-1.5 text-[13px] font-medium text-[var(--paper)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 transition-opacity";
 
 export const buttonSecondary =
-  "rounded-md border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--ink)] hover:border-[var(--index)] hover:text-[var(--index)] disabled:opacity-40 transition-colors";
+  "rounded border border-[var(--line)] px-2.5 py-1 text-xs text-[var(--ink)] hover:border-[var(--index)] hover:text-[var(--index)] disabled:opacity-40 transition-colors";
 
 export const card =
-  "mt-4 rounded-lg border border-[var(--line)] bg-[var(--paper)] p-6 shadow-[0_1px_0_var(--line)]";
+  "rounded border border-[var(--line)] bg-[var(--paper)] p-4";
+
+export const tile =
+  "rounded border border-[var(--line)] bg-[var(--paper)] px-4 py-3";
+
+export const tableHeader =
+  "font-mono text-[11px] uppercase tracking-wider text-[var(--ink-soft)] text-left font-normal py-2 pr-4 border-b border-[var(--line)]";
+
+export const tableCell = "py-2 pr-4 text-[13px] border-b border-[var(--line)]";
 
 export const muted = "text-[var(--ink-soft)]";
 
-export const errorText = "font-mono text-sm text-[var(--danger)]";
+export const errorText = "font-mono text-xs text-[var(--danger)]";
 
-export const label = "font-mono text-xs uppercase tracking-wider text-[var(--ink-soft)]";
+export const label = "font-mono text-[11px] uppercase tracking-wider text-[var(--ink-soft)]";
+
+export const pageTitle = "font-display text-lg font-semibold tracking-tight";

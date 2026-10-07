@@ -211,7 +211,7 @@ export function Ask() {
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [result, setResult] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [downloading, setDownloading] = useState<"pdf" | "docx" | "json" | null>(null);
+  const [downloading, setDownloading] = useState<"pdf" | "docx" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -281,7 +281,7 @@ export function Ask() {
     }
   };
 
-  const handleDownload = async (fmt: "pdf" | "docx" | "json") => {
+  const handleDownload = async (fmt: "pdf" | "docx") => {
     if (!result) return;
     setDownloading(fmt);
     setError(null);

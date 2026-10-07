@@ -147,6 +147,28 @@ export const api = {
 
     return (await response.json()) as QueryResult;
   },
+
+  stats: () => request<OverviewStats>("/stats"),
+
+  listDocuments: (opts: { folder?: string; status?: string; q?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.folder) params.set("folder", opts.folder);
+    if (opts.status) params.set("status", opts.status);
+    if (opts.q) params.set("q", opts.q);
+    const qs = params.toString();
+    return request<{ documents: DocumentRow[]; total: number }>(
+      qs ? `/documents?${qs}` : "/documents",
+    );
+  },
+
+  listQueryHistory: () => request<{ queries: QueryHistorySummary[] }>("/history/queries"),
+
+  getQueryHistory: (id: number) => request<QueryHistoryDetail>(`/history/queries/${id}`),
+
+  deleteQueryHistory: (id: number) =>
+    request<{ deleted: number }>(`/history/queries/${id}`, { method: "DELETE" }),
+
+  listExportHistory: () => request<{ exports: ExportHistoryRow[] }>("/history/exports"),
 };
 
 export interface FolderStatus {
@@ -166,6 +188,65 @@ export interface QueryResult {
   grounded: boolean;
   cross_doc: { answer: string; sources: string[] } | null;
   statistical: { answer: string; correlation_summary: string } | null;
+  history_id?: number;
+}
+
+export interface OverviewStats {
+  documents: {
+    total: number;
+    discovered: number;
+    converted: number;
+    summarized: number;
+    failed: number;
+  };
+  chunks: number;
+  storage_bytes: number;
+  folders: number;
+  queries_total: number;
+  exports_total: number;
+  recent_activity: { type: string; label: string; at: string }[];
+}
+
+export interface DocumentRow {
+  id: number;
+  path: string;
+  title: string | null;
+  author: string | null;
+  mime_type: string;
+  size_bytes: number;
+  page_count: number | null;
+  status: string;
+  queue: string;
+  discovered_at: string | null;
+  doc_created_at: string | null;
+}
+
+export interface QueryHistorySummary {
+  id: number;
+  question: string;
+  grounded: boolean;
+  source_count: number;
+  filter_folders: string[];
+  filter_author: string | null;
+  filter_title: string | null;
+  attached_filenames: string[];
+  created_at: string | null;
+}
+
+export interface QueryHistoryDetail extends QueryHistorySummary {
+  answer: string;
+  sources: string[];
+  cross_doc: { answer: string; sources: string[] } | null;
+  statistical: { answer: string; correlation_summary: string } | null;
+}
+
+export interface ExportHistoryRow {
+  id: number;
+  query_history_id: number | null;
+  filename: string;
+  fmt: string;
+  size_bytes: number;
+  created_at: string | null;
 }
 
 /** Downloads a query result as a file (PDF by default) — POSTs the
@@ -176,7 +257,8 @@ export interface QueryResult {
 export async function downloadExport(
   content: string,
   filename: string,
-  fmt: "pdf" | "docx" | "json" = "pdf",
+  fmt: "pdf" | "docx" = "pdf",
+  historyId?: number,
 ): Promise<void> {
   const token = getToken();
   const headers = new Headers();
@@ -186,7 +268,7 @@ export async function downloadExport(
   const response = await fetch(`${BASE_URL}/export`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ content, filename, fmt }),
+    body: JSON.stringify({ content, filename, fmt, history_id: historyId ?? null }),
   });
 
   if (!response.ok) {
@@ -205,6 +287,38 @@ export async function downloadExport(
   const link = document.createElement("a");
   link.href = url;
   link.download = `${filename}.${fmt}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** Re-downloads a previously generated export straight from the server
+ * rather than re-rendering it — the file is still on disk under
+ * exports/. Returns an error message if the server no longer has it. */
+export async function downloadHistoryExport(row: ExportHistoryRow): Promise<void> {
+  const token = getToken();
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const response = await fetch(`${BASE_URL}/history/exports/${row.id}/download`, { headers });
+
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      detail = body.detail ?? detail;
+    } catch {
+      // not JSON; keep statusText
+    }
+    throw new ApiError(response.status, detail);
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${row.filename}.${row.fmt}`;
   document.body.appendChild(link);
   link.click();
   link.remove();
