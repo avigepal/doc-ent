@@ -410,6 +410,31 @@ def stats_endpoint(session: Session = Depends(get_session)) -> dict:
     return get_overview_stats(session, Path(settings.data_dir) / "raw")
 
 
+@app.get("/documents", dependencies=[Depends(require_bearer_token)])
+def documents_endpoint(
+    folder: str | None = None,
+    status: str | None = None,
+    q: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Every ingested file with its metadata, in one call. Backs the
+    Documents page's table."""
+    from app.ingestion.documents_query import list_documents
+
+    documents, total = list_documents(
+        session,
+        raw_dir=str(Path(settings.data_dir) / "raw"),
+        folder=folder,
+        status=status,
+        search=q,
+        limit=min(limit, 500),
+        offset=offset,
+    )
+    return {"documents": documents, "total": total}
+
+
 # Phase 7: serve the built React dashboard as static files so the whole
 # app is one process, one port. Registered last so it doesn't shadow the
 # API routes above (FastAPI matches routes in registration order). In
