@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+/*
+  Design identity: an archive / index-card system — the subject is a
+  document-intelligence tool whose whole value is grounded citations
+  pulled from a filed, folder-organized corpus. Tokens below are named
+  for that (paper, ink, index, locator) rather than generic ui-* names.
+*/
+:root {
+  --paper: #f2f1ed;
+  --ink: #16181d;
+  --ink-soft: #52555c;
+  --line: #d8d5cc;
+  --index: #2b3a67;
+  --index-soft: #dce1ee;
+  --locator: #a8681f;
+  --locator-soft: #f3e3cc;
+  --signal: #3f6b46;
+  --danger: #a3372f;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #15171b;
+    --ink: #ece9e2;
+    --ink-soft: #9a9ca3;
+    --line: #2b2e34;
+    --index: #8ea0e0;
+    --index-soft: #1f2740;
+    --locator: #e3a85e;
+    --locator-soft: #33260f;
+    --signal: #83b48a;
+    --danger: #e17c73;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+}
+
+.font-display {
+  font-family: "Libre Franklin", ui-sans-serif, system-ui, sans-serif;
+}
+
+.font-mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+/* Signature motion: a scan-line sweep across the Ask input while a
+   request is in flight — a literal nod to document scanning, the one
+   orchestrated animation on the page. Disabled for reduced-motion. */
+@keyframes scan-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.scan-line {
+  animation: scan-sweep 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-line {
+    animation: none;
+  }
+}

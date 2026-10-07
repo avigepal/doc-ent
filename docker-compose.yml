@@ -1,0 +1,140 @@
+# Works unchanged with either Docker (`docker compose`) or Podman
+# (`podman compose` / `podman-compose`) — standard Compose spec
+# throughout, no Docker-exclusive features. See README's "Podman"
+# section for the one-time machine setup. The commented-out GPU
+# `deploy.resources.reservations.devices` block below is Compose-spec
+# syntax that Podman's compose providers support less consistently than
+# Docker's — revisit that specific block's syntax once llama.cpp
+# services are actually wired up.
+
+x-backend-build: &backend-build
+  # One explicit image tag shared by every service below — api and all
+  # celery-* workers are the exact same image, differing only in
+  # `command:`. Without this, `docker compose build` tags each service
+  # separately (doc-api, doc-celery-beat, doc-celery-summarize, ...) —
+  # 10 near-identical-looking rows in `docker images`/Docker Desktop
+  # even though they share layers and cost almost no extra disk. This
+  # collapses that to one real build, one tag, ten containers from it.
+  image: doc-worker:latest
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  env_file: .env
+  volumes:
+    # HOST_DATA_DIR (compose-interpolation var, host-side path) is
+    # deliberately NOT the same name as DATA_DIR (the container-internal
+    # path the app reads via Settings) — they used to collide, which
+    # silently bind-mounted the wrong host folder. Keep them distinct.
+    - ${HOST_DATA_DIR:-./data}:/data/pipeline
+  depends_on:
+    - postgres
+    - redis
+
+services:
+  # ---------- infra ----------
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pipeline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-pipeline}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    ports:
+      - "6379:6379"
+
+  flower:
+    image: mher/flower:2.0
+    restart: always
+    environment:
+      - CELERY_BROKER_URL=${REDIS_URL:-redis://redis:6379/0}
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+
+  # ---------- API (phase 1 — working now) ----------
+  api:
+    <<: *backend-build
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+
+  # ---------- Celery workers (stubs until phase 2/3/4 are built) ----------
+  celery-convert-fast:
+    <<: *backend-build
+    command: celery -A app.celery_app worker -Q convert_fast -c 2
+
+  celery-convert-ocr:
+    <<: *backend-build
+    command: celery -A app.celery_app worker -Q convert_ocr -c 1
+
+  celery-convert-vision:
+    <<: *backend-build
+    command: celery -A app.celery_app worker -Q convert_vision -c 1
+
+  celery-convert-email-archive:
+    <<: *backend-build
+    command: celery -A app.celery_app worker -Q convert_email_archive -c 1
+
+  celery-summarize:
+    <<: *backend-build
+    command: celery -A app.celery_app worker -Q summarize -c 1
+
+  celery-reduce:
+    <<: *backend-build
+    command: celery -A app.celery_app worker -Q reduce -c 1
+
+  celery-correlate:
+    <<: *backend-build
+    command: celery -A app.celery_app worker -Q correlate -c 1
+
+  # ---------- auto-ingest (polls raw/ on a timer, no manual API calls needed) ----------
+  celery-auto-ingest:
+    <<: *backend-build
+    command: celery -A app.celery_app worker -Q auto_ingest -c 1
+
+  celery-beat:
+    <<: *backend-build
+    command: celery -A app.celery_app beat --loglevel=info
+    # beat only schedules ticks (see AUTO_INGEST_INTERVAL_SECONDS in .env);
+    # celery-auto-ingest above is what actually runs the cycle.
+
+  # ---------- llama.cpp inference (phase 3/4 — wire up once GGUF models exist) ----------
+  # llama-text:
+  #   image: ghcr.io/ggerganov/llama.cpp:server-cuda
+  #   command: -m /models/qwen3-30b-a3b-instruct.Q4_K_M.gguf --host 0.0.0.0 --port 8080 --tensor-split 1,1
+  #   volumes:
+  #     - ./models:/models
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+  #
+  # llama-vision:
+  #   image: ghcr.io/ggerganov/llama.cpp:server-cuda
+  #   command: -m /models/qwen2.5-vl.Q4_K_M.gguf --mmproj /models/qwen2.5-vl-mmproj.gguf --host 0.0.0.0 --port 8080
+  #   volumes:
+  #     - ./models:/models
+  #
+  # llama-embed:
+  #   image: ghcr.io/ggerganov/llama.cpp:server-cuda
+  #   command: -m /models/bge-m3.Q8_0.gguf --embedding --host 0.0.0.0 --port 8080
+  #   volumes:
+  #     - ./models:/models
+
+  # ---------- React dashboard (phase 7 — scaffold later, served as static files by `api`) ----------
+
+volumes:
+  pgdata:
