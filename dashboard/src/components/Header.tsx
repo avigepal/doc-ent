@@ -7,7 +7,6 @@ const NAV = [
   { to: "/documents", label: "Documents" },
   { to: "/history", label: "History" },
   { to: "/progress", label: "Progress" },
-  { to: "/ingestion", label: "Ingestion" },
 ];
 
 /** Height of this bar — Layout (App.tsx) and Sidebar offset by it, so keep

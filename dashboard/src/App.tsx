@@ -7,7 +7,6 @@ import { Documents } from "./pages/Documents";
 import { History } from "./pages/History";
 import { Login } from "./pages/Login";
 import { Progress } from "./pages/Progress";
-import { Status } from "./pages/Status";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { token } = useAuth();
@@ -54,9 +53,7 @@ function App() {
       <Route path="/documents" element={guarded(<Documents />)} />
       <Route path="/history" element={guarded(<History />)} />
       <Route path="/progress" element={guarded(<Progress />)} />
-      <Route path="/ingestion" element={guarded(<Status />)} />
-      {/* Old bookmarks from the two-page layout, and the removed Overview page. */}
-      <Route path="/status" element={<Navigate to="/ingestion" replace />} />
+      {/* Old bookmarks (/status, /ingestion, the removed Overview page) fall through to "*" below. */}
       <Route path="/" element={<Navigate to="/ask" replace />} />
       <Route path="*" element={<Navigate to="/ask" replace />} />
     </Routes>
