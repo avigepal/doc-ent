@@ -71,6 +71,100 @@ function HelpModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** Asks for a new folder's name. Rendered into document.body like HelpModal
+ * (the sidebar is its own stacking context). `onCreate` throws on failure so
+ * the error can be shown right here and the dialog stays open to retry. */
+function NewFolderModal({ onClose, onCreate }: { onClose: () => void; onCreate: (name: string) => Promise<void> }) {
+  const [name, setName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !creating) onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, creating]);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const trimmed = name.trim();
+    if (!trimmed || creating) return;
+    setCreating(true);
+    setError(null);
+    try {
+      await onCreate(trimmed);
+      onClose();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err));
+      setCreating(false);
+    }
+  };
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+      onClick={() => !creating && onClose()}
+    >
+      <form
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-folder-title"
+        onSubmit={submit}
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-sm rounded-lg border border-[var(--line)] bg-[var(--paper)] p-5 shadow-xl"
+      >
+        <div className="flex items-start justify-between gap-4">
+          <h2 id="new-folder-title" className="font-display text-base font-semibold tracking-tight">
+            New folder
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={creating}
+            aria-label="Close"
+            className="cursor-pointer rounded p-0.5 text-[var(--ink-soft)] hover:text-[var(--ink)] disabled:cursor-not-allowed"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <p className={`mt-1 text-xs ${muted}`}>
+          Name it, then add documents to it. Letters, numbers, dashes and underscores work best.
+        </p>
+        <label htmlFor="new-folder-name" className={`${label} mt-4 block`}>
+          Folder name
+        </label>
+        <input
+          id="new-folder-name"
+          type="text"
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. contracts"
+          disabled={creating}
+          className="mt-1.5 w-full rounded border border-[var(--line)] bg-[var(--paper)] px-2.5 py-1.5 text-[13px] text-[var(--ink)] placeholder:text-[var(--ink-soft)] focus:border-[var(--index)] focus:outline-none disabled:opacity-60"
+        />
+        {error && <p className={`mt-2 ${errorText}`}>{error}</p>}
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onClose} disabled={creating} className={buttonSecondary}>
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={!name.trim() || creating}
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded bg-[var(--index)] px-3 py-1 text-xs font-medium text-[var(--paper)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {creating && <Loader2 size={12} className="animate-spin" />}
+            Create
+          </button>
+        </div>
+      </form>
+    </div>,
+    document.body,
+  );
+}
+
 /** Chat list + Scope, shown only on the Ask page (see App.tsx's Layout).
  * Both are scoped to that page via its URL (?c=, ?all=, ?folders=) rather
  * than component state — Sidebar and Ask.tsx are siblings under Layout,
@@ -81,9 +175,7 @@ export function Sidebar() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [folders, setFolders] = useState<FolderStatus[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [newFolderName, setNewFolderName] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
 
   const activeConversationId = searchParams.get("c");
   const scopeAll = searchParams.get("all") === "1";
@@ -168,21 +260,10 @@ export function Sidebar() {
     setSearchParams(next, { replace: true });
   };
 
-  const handleCreateFolder = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!newFolderName.trim()) return;
-    setCreating(true);
-    setCreateError(null);
-    try {
-      await api.createFolder(newFolderName.trim());
-      setNewFolderName("");
-      const r = await api.listFolders();
-      setFolders(r.folders);
-    } catch (err) {
-      setCreateError(err instanceof ApiError ? err.message : String(err));
-    } finally {
-      setCreating(false);
-    }
+  const createFolder = async (name: string) => {
+    await api.createFolder(name);
+    const r = await api.listFolders();
+    setFolders(r.folders);
   };
 
   return (
@@ -197,7 +278,7 @@ export function Sidebar() {
           <MessageSquarePlus size={14} /> New chat
         </Link>
         {conversations.length > 0 && (
-          <div className="mt-1 flex flex-col gap-0.5">
+          <div className="mt-2 flex flex-col gap-1.5">
             {conversations.map((c) => {
               const active = c.conversation_id === activeConversationId;
               const confirming = confirmingId === c.conversation_id;
@@ -205,16 +286,19 @@ export function Sidebar() {
               return (
                 <div
                   key={c.conversation_id}
-                  className={`group flex items-center rounded transition-colors ${
+                  // Every chat is a light bordered card (a faint tint of the text color over
+                  // the page, so it works in light and dark mode); hover deepens it a little,
+                  // and the open chat switches to the accent colors so it stands apart.
+                  className={`group flex items-center rounded border transition-colors ${
                     active
-                      ? "bg-[var(--index-soft)] text-[var(--index)]"
-                      : "text-[var(--ink-soft)] hover:bg-[var(--index-soft)] hover:text-[var(--ink)]"
+                      ? "border-[var(--index)] bg-[var(--index-soft)] text-[var(--index)]"
+                      : "border-[var(--line)] bg-[color-mix(in_srgb,var(--ink)_4%,var(--paper))] text-[var(--ink-soft)] hover:border-[var(--ink-soft)] hover:bg-[color-mix(in_srgb,var(--ink)_8%,var(--paper))] hover:text-[var(--ink)]"
                   }`}
                 >
                   <Link
                     to={`/ask?c=${c.conversation_id}`}
                     title={c.title}
-                    className={`flex min-w-0 flex-1 items-center gap-1.5 px-3 py-1 text-[12.5px] ${active ? "font-medium" : ""}`}
+                    className={`flex min-w-0 flex-1 items-center gap-1.5 px-3 py-1.5 text-[12.5px] ${active ? "font-medium" : ""}`}
                   >
                     {c.pinned && <Pin size={11} className="shrink-0 text-[var(--index)]" />}
                     <span className="truncate">{c.title}</span>
@@ -306,32 +390,25 @@ export function Sidebar() {
               </button>
             );
           })}
+          <button
+            type="button"
+            onClick={() => setNewFolderOpen(true)}
+            title="New folder"
+            aria-label="New folder"
+            className="inline-flex cursor-pointer items-center rounded border border-dashed border-[var(--line)] px-2 py-0.5 text-[var(--ink-soft)] transition-colors hover:border-[var(--index)] hover:text-[var(--index)]"
+          >
+            <Plus size={13} />
+          </button>
           {folders.length === 0 && <span className={muted}>No folders yet</span>}
         </div>
 
-        <form onSubmit={handleCreateFolder} className="mt-2 flex items-center gap-1.5">
-          <input
-            type="text"
-            placeholder="new folder"
-            value={newFolderName}
-            onChange={(e) => setNewFolderName(e.target.value)}
-            className="w-full min-w-0 rounded border border-[var(--line)] bg-[var(--paper)] px-2 py-0.5 text-xs text-[var(--ink)] placeholder:text-[var(--ink-soft)] focus:border-[var(--index)] focus:outline-none transition-colors"
-          />
-          <button
-            type="submit"
-            disabled={!newFolderName.trim() || creating}
-            className={`${buttonSecondary} flex shrink-0 items-center px-2 py-0.5`}
-          >
-            {creating ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
-          </button>
-        </form>
-        {createError && <p className={`mt-1 ${errorText}`}>{createError}</p>}
         {scopeAll && <p className={`mt-2 text-xs ${muted}`}>whole corpus</p>}
         {!scopeAll && selectedFolders.length === 0 && (
           <p className={`mt-2 text-xs ${muted}`}>chatting directly with the model</p>
         )}
       </div>
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
+      {newFolderOpen && <NewFolderModal onClose={() => setNewFolderOpen(false)} onCreate={createFolder} />}
     </aside>
   );
 }
