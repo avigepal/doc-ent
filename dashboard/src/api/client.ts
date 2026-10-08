@@ -98,11 +98,26 @@ export const api = {
   // dashboard makes; /ask and /correlate still exist on the backend for
   // direct API use but the UI doesn't have separate pages for them.
   // `folders`: empty searches the whole corpus; non-empty scopes
-  // retrieval to just those top-level folders under raw/. `author`/
-  // `title`: optional case-insensitive substring filters on the
+  // retrieval to just those top-level folders under raw/. `chatOnly`:
+  // skips retrieval entirely and talks to the model directly — set when
+  // the Scope bar has nothing selected (neither "All" nor a folder).
+  // `author`/`title`: optional case-insensitive substring filters on the
   // document-intrinsic metadata extracted at convert time, e.g. "files
-  // written by this author".
-  query: (question: string, options: { folders?: string[]; author?: string; title?: string; k?: number } = {}) =>
+  // written by this author". `conversationId`: which chat thread this
+  // question belongs to (see Ask.tsx) — stored alongside the answer so
+  // the sidebar's chat list and thread-restore-on-reload can group by it.
+  query: (
+    question: string,
+    options: {
+      folders?: string[];
+      author?: string;
+      title?: string;
+      k?: number;
+      chatOnly?: boolean;
+      conversationId?: string;
+      fileIds?: number[];
+    } = {},
+  ) =>
     request<QueryResult>("/query", {
       method: "POST",
       body: JSON.stringify({
@@ -111,8 +126,101 @@ export const api = {
         folders: options.folders ?? [],
         author: options.author || null,
         title: options.title || null,
+        chat_only: options.chatOnly ?? false,
+        conversation_id: options.conversationId ?? "",
+        file_ids: options.fileIds?.length ? options.fileIds : null,
       }),
     }),
+
+  // Streaming counterpart to query() — same semantics (folders/chatOnly/
+  // author/title), but the main answer arrives token-by-token through
+  // Server-Sent Events instead of as one blocking JSON response. fetch +
+  // a manual ReadableStream read, not EventSource, since EventSource
+  // can't send a POST body. Resolves once the stream's "done" event
+  // arrives; each piece is delivered through the handlers as it comes
+  // in. See backend/app/main.py:query_stream_endpoint for the event
+  // shapes (meta/token/extra/done/error).
+  queryStream: async (
+    question: string,
+    options: {
+      folders?: string[];
+      author?: string;
+      title?: string;
+      k?: number;
+      chatOnly?: boolean;
+      conversationId?: string;
+      fileIds?: number[];
+    } = {},
+    handlers: {
+      onMeta?: (meta: { sources: string[]; grounded: boolean }) => void;
+      onToken?: (text: string) => void;
+      onExtra?: (extra: {
+        cross_doc: { answer: string; sources: string[] } | null;
+        statistical: { answer: string; correlation_summary: string } | null;
+      }) => void;
+      onDone?: (historyId: number) => void;
+    } = {},
+  ): Promise<void> => {
+    const token = getToken();
+    const headers = new Headers();
+    headers.set("Content-Type", "application/json");
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+
+    const response = await fetch(`${BASE_URL}/query/stream`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        question,
+        k: options.k ?? 8,
+        folders: options.folders ?? [],
+        author: options.author || null,
+        title: options.title || null,
+        chat_only: options.chatOnly ?? false,
+        conversation_id: options.conversationId ?? "",
+        file_ids: options.fileIds?.length ? options.fileIds : null,
+      }),
+    });
+
+    if (!response.ok || !response.body) {
+      let detail = response.statusText;
+      try {
+        const body = await response.json();
+        detail = body.detail ?? detail;
+      } catch {
+        // not JSON; keep statusText
+      }
+      throw new ApiError(response.status, detail);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let sepIndex: number;
+      while ((sepIndex = buffer.indexOf("\n\n")) !== -1) {
+        const rawEvent = buffer.slice(0, sepIndex);
+        buffer = buffer.slice(sepIndex + 2);
+        const lines = rawEvent.split("\n");
+        const eventLine = lines.find((l) => l.startsWith("event: "));
+        const dataLine = lines.find((l) => l.startsWith("data: "));
+        if (!eventLine || !dataLine) continue;
+
+        const eventName = eventLine.slice("event: ".length);
+        const data = JSON.parse(dataLine.slice("data: ".length));
+
+        if (eventName === "meta") handlers.onMeta?.(data);
+        else if (eventName === "token") handlers.onToken?.(data.text);
+        else if (eventName === "extra") handlers.onExtra?.(data);
+        else if (eventName === "done") handlers.onDone?.(data.history_id);
+        else if (eventName === "error") throw new ApiError(500, data.message ?? "stream error");
+      }
+    }
+  },
 
   // ChatGPT/OpenWebUI-style "+" attach: converts the given files on the
   // spot and answers strictly from them, bypassing the corpus/pgvector
@@ -154,6 +262,51 @@ export const api = {
     return (await response.json()) as QueryResult;
   },
 
+  // The Ask page's "+" button: persists the picked file(s) into a fixed
+  // raw/uploads/ folder — never into whatever folder is selected in
+  // Scope — and kicks off the normal convert -> summarize pipeline right
+  // away. Multipart, not JSON, since it carries binary files. Distinct
+  // from queryUpload above, which never saves anything.
+  uploadFiles: async (
+    files: File[],
+  ): Promise<{
+    folder: string;
+    uploaded: string[];
+    file_ids: number[];
+    registered: number;
+    convert_enqueued: Record<string, number>;
+  }> => {
+    const token = getToken();
+    const form = new FormData();
+    for (const f of files) form.append("files", f);
+
+    const headers = new Headers();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    // Content-Type intentionally NOT set here — same reason as queryUpload.
+
+    const response = await fetch(`${BASE_URL}/ingest/upload`, {
+      method: "POST",
+      headers,
+      body: form,
+    });
+
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        const body = await response.json();
+        detail = body.detail ?? detail;
+      } catch {
+        // not JSON; keep statusText
+      }
+      throw new ApiError(response.status, detail);
+    }
+
+    return await response.json();
+  },
+
+  // Live pipeline state for the Progress page — polled while it's open.
+  ingestionProgress: () => request<IngestionProgress>("/ingestion/progress"),
+
   stats: () => request<OverviewStats>("/stats"),
 
   listDocuments: (opts: { folder?: string; status?: string; q?: string } = {}) => {
@@ -163,19 +316,65 @@ export const api = {
     if (opts.q) params.set("q", opts.q);
     const qs = params.toString();
     return request<{ documents: DocumentRow[]; total: number }>(
-      qs ? `/documents?${qs}` : "/documents",
+      qs ? `/documents/list?${qs}` : "/documents/list",
     );
   },
 
   listQueryHistory: () => request<{ queries: QueryHistorySummary[] }>("/history/queries"),
+
+  // detail=true returns every answer body in one call, not just
+  // metadata — used by the Ask page to restore one chat thread
+  // (conversationId) on reload without fetching each entry individually.
+  listQueryHistoryDetail: (limit = 30, conversationId?: string) => {
+    const params = new URLSearchParams({ limit: String(limit), detail: "true" });
+    if (conversationId) params.set("conversation_id", conversationId);
+    return request<{ queries: QueryHistoryDetail[] }>(`/history/queries?${params}`);
+  },
+
+  // The sidebar's chat list — one row per conversation, titled by its
+  // opening question, newest-active first. See backend app/history/
+  // store.py:list_conversations.
+  listConversations: (limit = 50) =>
+    request<{ conversations: ConversationSummary[] }>(`/history/conversations?limit=${limit}`),
+
+  setConversationPinned: (conversationId: string, pinned: boolean) =>
+    request<{ conversation_id: string; pinned: boolean }>(
+      `/history/conversations/${encodeURIComponent(conversationId)}/pin`,
+      { method: "PUT", body: JSON.stringify({ pinned }) },
+    ),
+
+  deleteConversation: (conversationId: string) =>
+    request<{ deleted: string; messages: number }>(
+      `/history/conversations/${encodeURIComponent(conversationId)}`,
+      { method: "DELETE" },
+    ),
 
   getQueryHistory: (id: number) => request<QueryHistoryDetail>(`/history/queries/${id}`),
 
   deleteQueryHistory: (id: number) =>
     request<{ deleted: number }>(`/history/queries/${id}`, { method: "DELETE" }),
 
+  // Where freshly uploaded files are on their way to being searchable; the
+  // ids come from uploadFiles' response. See backend upload_status.py.
+  uploadStatus: (ids: number[]) =>
+    request<{ files: UploadStatusFile[]; done: boolean }>(`/ingest/upload/status?ids=${ids.join(",")}`),
+
+  // Uploads are the current chat's attachments: a new chat clears them all,
+  // and a chip's X removes one. Only the uploads folder is ever touched.
+  clearUploads: () => request<{ deleted: number }>("/ingest/uploads", { method: "DELETE" }),
+  deleteUpload: (id: number) => request<{ deleted: number }>(`/ingest/uploads/${id}`, { method: "DELETE" }),
+
   listExportHistory: () => request<{ exports: ExportHistoryRow[] }>("/history/exports"),
 };
+
+export type UploadStage = "queued" | "converting" | "indexing" | "ready" | "failed" | "unsupported";
+
+export interface UploadStatusFile {
+  id: number;
+  name: string;
+  stage: UploadStage;
+  detail: string | null;
+}
 
 export interface FolderStatus {
   name: string;
@@ -183,6 +382,7 @@ export interface FolderStatus {
   discovered: number;
   converted: number;
   summarized: number;
+  unsupported: number;
   processing: boolean;
   has_failures: boolean;
 }
@@ -197,6 +397,15 @@ export interface QueryResult {
   history_id?: number;
 }
 
+export interface IngestionProgress {
+  summaries_enabled: boolean;
+  totals: { files: number; unsupported: number; discovered: number; converted: number; summarized: number; running: number; failed: number };
+  folders: { name: string; total: number; converted: number; summarized: number; running: number; failed: number }[];
+  active: { file: string; folder: string; stage: string; size_bytes: number; elapsed_seconds: number }[];
+  failures: { file: string; folder: string; stage: string; error: string | null; retries: number; at: string | null }[];
+  recent: { file: string; folder: string; stage: string; finished_at: string | null }[];
+}
+
 export interface OverviewStats {
   documents: {
     total: number;
@@ -204,6 +413,7 @@ export interface OverviewStats {
     converted: number;
     summarized: number;
     failed: number;
+    unsupported: number;
   };
   chunks: number;
   storage_bytes: number;
@@ -236,7 +446,17 @@ export interface QueryHistorySummary {
   filter_author: string | null;
   filter_title: string | null;
   attached_filenames: string[];
+  chat_only: boolean;
+  conversation_id: string;
   created_at: string | null;
+}
+
+export interface ConversationSummary {
+  conversation_id: string;
+  title: string;
+  last_at: string | null;
+  message_count: number;
+  pinned: boolean;
 }
 
 export interface QueryHistoryDetail extends QueryHistorySummary {

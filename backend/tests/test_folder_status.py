@@ -76,3 +76,17 @@ def test_build_folder_statuses_ignores_files_outside_any_folder():
 
 def test_build_folder_statuses_empty_input_returns_empty_list():
     assert build_folder_statuses("/raw", [], set(), set()) == []
+
+
+def test_unsupported_files_are_counted_apart_from_total():
+    files = [
+        (1, "/raw/tools/a.txt", "summarized"),
+        (2, "/raw/tools/setup.exe", "unsupported"),
+        (3, "/raw/tools/lib.dll", "unsupported"),
+    ]
+
+    [folder] = build_folder_statuses("/raw", files, running_file_ids=set(), failed_file_ids=set())
+
+    assert folder.total_files == 1
+    assert folder.summarized == 1
+    assert folder.unsupported == 2

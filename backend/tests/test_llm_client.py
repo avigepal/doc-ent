@@ -43,3 +43,30 @@ def test_chat_raises_on_http_error():
 
     with pytest.raises(httpx.HTTPStatusError):
         client.chat(system="sys", user="user")
+
+
+def _sse(*deltas: str) -> bytes:
+    lines = [f"data: {json.dumps({'choices': [{'delta': {'content': d}}]})}" for d in deltas]
+    lines.append("data: [DONE]")
+    return ("\n\n".join(lines) + "\n\n").encode()
+
+
+def test_chat_stream_yields_each_delta_in_order():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["stream"] is True
+        return httpx.Response(200, content=_sse("Hel", "lo", " world"))
+
+    client = _client_with_transport(handler)
+
+    pieces = list(client.chat_stream(system="sys", user="hi"))
+
+    assert pieces == ["Hel", "lo", " world"]
+
+
+def test_chat_stream_stops_at_done_and_skips_empty_deltas():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_sse("a", "", "b"))
+
+    client = _client_with_transport(handler)
+
+    assert list(client.chat_stream(system="sys", user="hi")) == ["a", "b"]

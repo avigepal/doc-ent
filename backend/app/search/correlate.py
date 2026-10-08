@@ -15,6 +15,7 @@ any tabular data was retrieved alongside them.
 
 from __future__ import annotations
 
+import re
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Protocol
@@ -26,8 +27,12 @@ from app.search.retrieval import RetrievedChunk
 CROSS_DOC_SYSTEM_PROMPT = (
     "You are comparing excerpts from multiple different source documents. "
     "Identify relationships, contradictions, or trends across them. Cite "
-    "the source number(s) in brackets, e.g. [1], for every claim. Do not "
-    "state anything not supported by the sources."
+    "the source number(s) in brackets, e.g. [1], for every claim. Write in "
+    "Markdown, lead with the finding, and keep it short. Use only "
+    "what the sources say -- no outside knowledge, no guessing. Report only "
+    "relationships that are explicitly supported; if the sources have no "
+    "real relationship to each other, reply exactly: No notable "
+    "relationships found."
 )
 
 STATISTICAL_SYSTEM_PROMPT = (
@@ -122,15 +127,38 @@ def statistical_correlate(
 
 # ---------- router ----------
 
+# Cross-document findings are a separate LLM call that compares sources
+# with each other. That only helps when the question is about relationships
+# between documents; on an ordinary question it just restates the answer
+# (and doubles the latency), so it's opt-in by wording.
+_COMPARISON_CUES = re.compile(
+    r"\b(?:compar\w*|versus|vs\.?|differ\w*|contradict\w*|conflict\w*|disagree\w*|inconsisten\w*|"
+    r"consisten\w*|relationship\w*|relat(?:e|es|ed|ing)\b|correlat\w*|trends?|similar\w*|in common|"
+    r"across\s+(?:the\s+|all\s+|these\s+|my\s+)?(?:documents?|files?|sources?)|"
+    r"between\s+(?:the\s+|these\s+)?(?:documents?|files?|sources?)|"
+    r"(?:both|each|every)\s+(?:of\s+the\s+)?(?:documents?|files?|sources?))",
+    re.IGNORECASE,
+)
+
+
+def wants_cross_document(question: str) -> bool:
+    return bool(_COMPARISON_CUES.search(question))
+
+
 def correlate(
     question: str,
     chunks: list[RetrievedChunk],
     tables: dict[str, pd.DataFrame],
     llm: LLMClient,
+    cross_doc_enabled: bool = True,
 ) -> CorrelationReport:
     distinct_files = {c.file_path for c in chunks}
 
-    cross_doc = cross_document_correlate(question, chunks, llm) if len(distinct_files) >= 2 else None
+    cross_doc = (
+        cross_document_correlate(question, chunks, llm)
+        if cross_doc_enabled and len(distinct_files) >= 2
+        else None
+    )
     statistical = statistical_correlate(question, tables, llm) if tables else None
 
     return CorrelationReport(question=question, cross_doc=cross_doc, statistical=statistical)

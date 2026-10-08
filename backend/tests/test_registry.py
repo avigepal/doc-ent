@@ -22,8 +22,28 @@ def test_email_archive_formats_go_to_email_queue():
     assert route_mime("application/octet-stream", filename="archive.pst") == "convert_email_archive"
 
 
-def test_unknown_mime_falls_back_to_catch_all():
-    assert route_mime("application/x-totally-unknown") == "convert_fast"
+def test_unknown_mime_is_unsupported_not_retried_through_convert_fast():
+    assert route_mime("application/x-totally-unknown") == "unsupported"
+
+
+def test_executables_and_libraries_are_unsupported():
+    assert route_mime("application/x-dosexec", filename="setup.exe") == "unsupported"
+    assert route_mime("application/x-dosexec", filename="lib.dll") == "unsupported"
+    assert route_mime("application/x-executable", filename="a.out") == "unsupported"
+    assert route_mime("application/zip", filename="bundle.zip") == "unsupported"
+    assert route_mime("application/octet-stream", filename="blob.bin") == "unsupported"
+
+
+def test_any_text_type_is_convertible():
+    assert route_mime("text/markdown", filename="notes.md") == "convert_fast"
+    assert route_mime("text/x-python", filename="a.py") == "convert_fast"
+
+
+def test_office_extension_rescues_only_generic_mime_types():
+    assert route_mime("application/zip", filename="report.docx") == "convert_fast"
+    assert route_mime("application/octet-stream", filename="old.xls") == "convert_fast"
+    # an executable renamed to .pdf is still an executable
+    assert route_mime("application/x-dosexec", filename="invoice.pdf") == "unsupported"
 
 
 def test_scanned_pdf_hint_still_routes_through_fast_queue_initially():

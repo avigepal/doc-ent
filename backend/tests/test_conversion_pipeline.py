@@ -89,3 +89,25 @@ def test_convert_and_store_overwrites_on_rerun(tmp_path: Path):
     )
 
     assert (converted_root / "doc.md").read_text(encoding="utf-8") == "second"
+
+
+def test_empty_conversion_output_is_a_failure_and_writes_nothing(tmp_path: Path):
+    import pytest
+
+    from app.conversion.pipeline import EmptyConversionError
+
+    raw_root = tmp_path / "raw"
+    raw_root.mkdir()
+    src = raw_root / "scan.pdf"
+    src.write_bytes(b"%PDF-")
+
+    with pytest.raises(EmptyConversionError):
+        convert_and_store(
+            raw_root=raw_root,
+            file_path=src,
+            converted_root=tmp_path / "converted",
+            backend=FakeBackend(markdown="  \n "),
+            extra_metadata={},
+        )
+
+    assert not (tmp_path / "converted").exists()

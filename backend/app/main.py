@@ -1,13 +1,22 @@
+import json
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import engine, get_session
-from app.pipeline_runner import run_convert_enqueue, run_scan, run_summarize_enqueue
+from app.queue_guard import UPLOAD_QUEUE
+from app.pipeline_runner import (
+    run_convert_enqueue,
+    register_files,
+    run_index_enqueue,
+    run_retry_failed,
+    run_scan,
+    run_summarize_enqueue,
+)
 
 
 class QuestionRequest(BaseModel):
@@ -16,8 +25,21 @@ class QuestionRequest(BaseModel):
     folders: list[str] = []  # top-level folder names under raw/; empty = whole corpus
     author: str | None = None  # case-insensitive substring match, e.g. "files by this author"
     title: str | None = None  # case-insensitive substring match
+    # The dashboard's Scope bar has three states: "All" selected (whole
+    # corpus, folders=[]), one or more folders selected (folders=[...]),
+    # or nothing selected at all -- chat_only=True, which skips retrieval
+    # entirely and talks to the model directly. folders is ignored when
+    # chat_only is set.
+    chat_only: bool = False
+    # Files attached to this chat (the dashboard's upload button). When
+    # given, the search covers exactly these files and folders is ignored.
+    file_ids: list[int] | None = None
+    # Client-generated UUID identifying which chat thread this question
+    # belongs to (see dashboard/src/pages/Ask.tsx) -- "" groups it with
+    # the other ungrouped legacy rows from before this field existed.
+    conversation_id: str = ""
 
-app = FastAPI(title="Doc Summarization Pipeline API")
+app = FastAPI(title="Docent API")
 
 
 @app.on_event("startup")
@@ -27,6 +49,16 @@ def _run_startup_migrations() -> None:
     from app.migrations import run_migrations
 
     run_migrations(engine)
+
+
+@app.on_event("startup")
+def _preload_task_modules() -> None:
+    """The ingest endpoints import the Celery tasks lazily; the first upload
+    after a restart then paid ~3 seconds of one-time imports before
+    answering. Loading them at startup moves that cost out of the request."""
+    import app.tasks.convert  # noqa: F401
+    import app.tasks.index  # noqa: F401
+    import app.tasks.summarize  # noqa: F401
 
 
 def require_bearer_token(authorization: str | None = Header(default=None)) -> None:
@@ -52,9 +84,9 @@ def ingest_scan(session: Session = Depends(get_session)) -> dict:
 @app.post("/ingest/convert", dependencies=[Depends(require_bearer_token)])
 def ingest_convert(session: Session = Depends(get_session)) -> dict:
     """Phase 2: enqueue the implemented conversion tasks (convert_fast,
-    convert_email_archive) for every discovered file routed to them.
-    convert_ocr/convert_vision aren't wired up yet, so files on those
-    queues are left as 'discovered'."""
+    convert_email_archive, convert_vision) for every discovered file routed
+    to them. convert_ocr isn't wired up yet, so files on that queue are
+    marked 'unsupported' by the scan."""
     return {"enqueued": run_convert_enqueue(session)}
 
 
@@ -65,6 +97,23 @@ def ingest_summarize(session: Session = Depends(get_session)) -> dict:
     llama_text_url) to actually complete — enqueuing itself has no
     GPU/network dependency."""
     return {"enqueued": {"summarize": run_summarize_enqueue(session)}}
+
+
+@app.post("/ingest/retry-failed", dependencies=[Depends(require_bearer_token)])
+def ingest_retry_failed(session: Session = Depends(get_session)) -> dict:
+    """Re-queues every file that ended up "failed" (conversion ran out of
+    retries). Use after fixing whatever made them fail."""
+    reset = run_retry_failed(session)
+    return {"reset": reset, "enqueued": run_convert_enqueue(session)}
+
+
+@app.post("/ingest/index", dependencies=[Depends(require_bearer_token)])
+def ingest_index(session: Session = Depends(get_session)) -> dict:
+    """Phase 4: chunk + embed every converted file that has no chunks yet,
+    so search can find it. Needs the embedding server (settings.
+    llama_embed_url) to complete. Also runs automatically each
+    auto-ingest cycle."""
+    return {"enqueued": {"index": run_index_enqueue(session)}}
 
 
 @app.get("/folders", dependencies=[Depends(require_bearer_token)])
@@ -90,6 +139,7 @@ def folders_endpoint(session: Session = Depends(get_session)) -> dict:
             "discovered": s.discovered if s else 0,
             "converted": s.converted if s else 0,
             "summarized": s.summarized if s else 0,
+            "unsupported": s.unsupported if s else 0,
             "processing": s.processing if s else False,
             "has_failures": s.has_failures if s else False,
         })
@@ -156,6 +206,30 @@ def create_folder_endpoint(payload: CreateFolderRequest) -> dict:
     return {"created": folder_name}
 
 
+def _catalog_answer(session: Session, payload: "QuestionRequest", raw_dir: str) -> dict | None:
+    """Questions about the library itself ("list all files", "how many
+    documents") are answered from the files table, scoped like a normal
+    query (selected folders / author / title). None means "not a library
+    question" -- the caller runs the usual search. See app/search/catalog.py."""
+    from app.search.catalog import format_catalog_answer, is_catalog_question, list_catalog
+
+    if payload.chat_only or not is_catalog_question(payload.question):
+        return None
+
+    entries = list_catalog(session, raw_dir, payload.folders, payload.author, payload.title, payload.file_ids)
+    answer, sources = format_catalog_answer(
+        entries, payload.folders, payload.author, payload.title, attached=bool(payload.file_ids)
+    )
+    return {
+        "question": payload.question,
+        "answer": answer,
+        "sources": sources,
+        "grounded": True,
+        "cross_doc": None,
+        "statistical": None,
+    }
+
+
 @app.post("/query", dependencies=[Depends(require_bearer_token)])
 def query_endpoint(payload: QuestionRequest, session: Session = Depends(get_session)) -> dict:
     """Phase 4: the single unified entry point the dashboard calls — one
@@ -168,14 +242,17 @@ def query_endpoint(payload: QuestionRequest, session: Session = Depends(get_sess
     browser) so it survives the tab closing, and `history_id` comes back
     so a follow-up /export can link to this query."""
     from app.history.store import record_query
-    from app.tasks.correlate import query
+    from app.tasks.correlate import _raw_dir, query
 
-    result = query(
+    catalog_result = _catalog_answer(session, payload, _raw_dir)
+    result = catalog_result or query(
         payload.question,
         k=payload.k,
         folders=payload.folders,
         author=payload.author,
         title=payload.title,
+        chat_only=payload.chat_only,
+        file_ids=payload.file_ids,
     )
     history_id = record_query(
         session,
@@ -184,12 +261,181 @@ def query_endpoint(payload: QuestionRequest, session: Session = Depends(get_sess
         folders=payload.folders,
         author=payload.author,
         title=payload.title,
+        chat_only=payload.chat_only,
+        conversation_id=payload.conversation_id,
     )
     return {**result, "history_id": history_id}
 
 
+@app.post("/query/stream", dependencies=[Depends(require_bearer_token)])
+def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(get_session)) -> StreamingResponse:
+    """SSE variant of /query: the main answer streams token-by-token as
+    the model generates it, instead of the client waiting for the whole
+    response. Event stream shape (see app/search/query.py:stream_query):
+    one "meta" (sources + grounded), then "token" events (concatenate
+    their text for the full answer), then one "extra" (cross_doc/
+    statistical, both null for chat_only/ungrounded), then one "done"
+    (history_id) once this endpoint has recorded the completed turn —
+    same recording /query does, just after the stream finishes instead
+    of before responding."""
+    from app.history.store import record_query
+    from app.search.catalog import catalog_events
+    from app.search.pgvector_retrieval import retrieve_top_k
+    from app.search.query import stream_query
+    from app.tasks.correlate import _embedder, _raw_dir, _text_llm
+
+    def event_source():
+        answer_parts: list[str] = []
+        meta = {"sources": [], "grounded": False}
+        extra = {"cross_doc": None, "statistical": None}
+        try:
+            catalog = _catalog_answer(session, payload, _raw_dir)
+            if catalog is not None:
+                chunks = []
+                events = catalog_events(catalog["answer"], catalog["sources"])
+            elif payload.chat_only:
+                chunks = []
+            else:
+                [query_embedding] = _embedder.embed([payload.question])
+                chunks = retrieve_top_k(
+                    session,
+                    query_embedding,
+                    k=payload.k,
+                    raw_dir=_raw_dir,
+                    folders=payload.folders,
+                    author=payload.author,
+                    title=payload.title,
+                    query_text=payload.question,
+                    file_ids=payload.file_ids,
+                )
+
+            if catalog is None:
+                events = stream_query(payload.question, chunks, {}, _text_llm, chat_only=payload.chat_only)
+            for evt in events:
+                if evt["event"] == "meta":
+                    meta = evt["data"]
+                elif evt["event"] == "token":
+                    answer_parts.append(evt["data"]["text"])
+                elif evt["event"] == "extra":
+                    extra = evt["data"]
+                yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
+        except Exception as exc:
+            yield f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+            return
+
+        result = {
+            "question": payload.question,
+            "answer": "".join(answer_parts),
+            "sources": meta.get("sources", []),
+            "grounded": meta.get("grounded", False),
+            **extra,
+        }
+        history_id = record_query(
+            session,
+            question=payload.question,
+            result=result,
+            folders=payload.folders,
+            author=payload.author,
+            title=payload.title,
+            chat_only=payload.chat_only,
+            conversation_id=payload.conversation_id,
+        )
+        yield f"event: done\ndata: {json.dumps({'history_id': history_id})}\n\n"
+
+    return StreamingResponse(event_source(), media_type="text/event-stream")
+
+
 MAX_UPLOAD_FILES = 50
 MAX_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024  # 100MB
+
+
+@app.post("/ingest/upload", dependencies=[Depends(require_bearer_token)])
+def ingest_upload_endpoint(
+    files: list[UploadFile] = File(...),
+    session: Session = Depends(get_session),
+) -> dict:
+    """The dashboard's "+" attach button: persists the uploaded file(s)
+    into a dedicated raw/uploads/ folder — never into whatever folder is
+    selected in Scope, or any other corpus folder — then registers just
+    those files and queues their conversion immediately (conversion queues
+    indexing itself when it finishes, so they become searchable without
+    waiting for the auto-ingest timer). Deliberately NOT a full corpus
+    scan, and a plain `def` so FastAPI runs the blocking file/DB work in
+    its thread pool instead of stalling every other request.
+    See app/ingestion/uploads.py."""
+    from app.ingestion.uploads import UPLOAD_FOLDER_NAME, safe_upload_filename, unique_destination
+
+    if len(files) > MAX_UPLOAD_FILES:
+        raise HTTPException(status_code=400, detail=f"too many files (max {MAX_UPLOAD_FILES})")
+
+    upload_dir = Path(settings.data_dir) / "raw" / UPLOAD_FOLDER_NAME
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    saved_names = []
+    saved_paths = []
+    total_bytes = 0
+    for f in files:
+        content = f.file.read()
+        total_bytes += len(content)
+        if total_bytes > MAX_UPLOAD_TOTAL_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"uploads exceed {MAX_UPLOAD_TOTAL_BYTES // (1024 * 1024)}MB total",
+            )
+        dest = unique_destination(upload_dir, safe_upload_filename(f.filename or "upload"))
+        dest.write_bytes(content)
+        saved_names.append(dest.name)
+        saved_paths.append(dest)
+
+    file_ids = register_files(session, saved_paths)
+    # the dedicated upload lane: its own worker converts AND indexes these,
+    # so they don't wait behind whatever bulk ingest has queued
+    convert_enqueued = run_convert_enqueue(session, file_ids, queue=UPLOAD_QUEUE)
+
+    return {
+        "folder": UPLOAD_FOLDER_NAME,
+        "uploaded": saved_names,
+        "file_ids": file_ids,
+        "registered": len(file_ids),
+        "convert_enqueued": convert_enqueued,
+    }
+
+
+@app.delete("/ingest/uploads", dependencies=[Depends(require_bearer_token)])
+def clear_uploads_endpoint(session: Session = Depends(get_session)) -> dict:
+    """Empties the uploads folder -- the dashboard calls this when a new chat
+    starts, since uploads are that chat's attachments. Removes the files, their
+    converted text, summaries, chunks and job records. Only ever touches the
+    dedicated uploads folder, never a corpus folder. See uploads.py."""
+    from app.ingestion.uploads import delete_uploads
+
+    return {"deleted": delete_uploads(session, settings.data_dir)}
+
+
+@app.delete("/ingest/uploads/{file_id}", dependencies=[Depends(require_bearer_token)])
+def delete_upload_endpoint(file_id: int, session: Session = Depends(get_session)) -> dict:
+    """Removes one attached file (the chip's X). Only files in the uploads
+    folder can be deleted this way."""
+    from app.ingestion.uploads import delete_uploads
+
+    return {"deleted": delete_uploads(session, settings.data_dir, [file_id])}
+
+
+@app.get("/ingest/upload/status", dependencies=[Depends(require_bearer_token)])
+def ingest_upload_status(ids: str, session: Session = Depends(get_session)) -> dict:
+    """Where freshly uploaded files are (queued / converting / indexing /
+    ready / failed / unsupported), for the Ask page's upload notice. `ids`
+    is the comma-separated file_ids the upload response returned. See
+    app/ingestion/upload_status.py."""
+    from app.ingestion.upload_status import TERMINAL_STAGES, get_upload_status
+
+    try:
+        file_ids = [int(part) for part in ids.split(",") if part.strip()][:MAX_UPLOAD_FILES]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ids must be comma-separated integers")
+
+    files = get_upload_status(session, file_ids)
+    return {"files": files, "done": all(f["stage"] in TERMINAL_STAGES for f in files)}
 
 
 @app.post("/query/upload", dependencies=[Depends(require_bearer_token)])
@@ -200,12 +446,14 @@ async def query_upload_endpoint(
     title: str | None = Form(None),  # case-insensitive substring match, same as /query's title
     session: Session = Depends(get_session),
 ) -> dict:
-    """The dashboard's ChatGPT/OpenWebUI-style "+" attach button: convert
-    the uploaded file(s) on the spot and answer strictly from them —
-    these files are never written into DATA_DIR/raw or the corpus, they
-    exist only for this one question. Needs a live llama-server (text) —
-    unlike /query, this doesn't need embeddings/pgvector at all, since
-    there's no retrieval: every uploaded file is included directly.
+    """Kept for direct API use (the dashboard's "+" attach button now
+    calls /ingest/upload instead, which persists into raw/uploads/ — see
+    app/ingestion/uploads.py): convert the uploaded file(s) on the spot
+    and answer strictly from them — these files are never written into
+    DATA_DIR/raw or the corpus, they exist only for this one question.
+    Needs a live llama-server (text) — unlike /query, this doesn't need
+    embeddings/pgvector at all, since there's no retrieval: every
+    uploaded file is included directly.
 
     author/title give this the same filtering /query has: each attached
     file's own extracted metadata is checked against the filter, and a
@@ -347,15 +595,70 @@ def export_endpoint(payload: ExportRequest, session: Session = Depends(get_sessi
 
 @app.get("/history/queries", dependencies=[Depends(require_bearer_token)])
 def history_queries_endpoint(
-    limit: int = 50, offset: int = 0, session: Session = Depends(get_session)
+    limit: int = 50,
+    offset: int = 0,
+    detail: bool = False,
+    conversation_id: str | None = None,
+    session: Session = Depends(get_session),
 ) -> dict:
-    """Paged query history, newest first. Summary shape — call
-    /history/queries/{id} for the stored answer."""
-    from app.history.serialization import query_record_to_summary
+    """Paged query history, newest first. Summary shape by default — call
+    /history/queries/{id} for one stored answer, or pass detail=true here
+    to get every answer body in one call. Pass conversation_id to scope
+    this to one chat thread (used by the Ask page to restore that
+    specific thread on reload without an N+1 fetch); omit it for the
+    History page's cross-conversation list."""
+    from app.history.serialization import query_record_to_detail, query_record_to_summary
     from app.history.store import list_queries
 
-    records = list_queries(session, limit=min(limit, 200), offset=offset)
-    return {"queries": [query_record_to_summary(r) for r in records]}
+    records = list_queries(session, limit=min(limit, 200), offset=offset, conversation_id=conversation_id)
+    shape = query_record_to_detail if detail else query_record_to_summary
+    return {"queries": [shape(r) for r in records]}
+
+
+@app.get("/history/conversations", dependencies=[Depends(require_bearer_token)])
+def history_conversations_endpoint(limit: int = 50, session: Session = Depends(get_session)) -> dict:
+    """The Ask page's sidebar chat list: one row per conversation_id,
+    titled by its opening question, newest-active first. See
+    app/history/store.py:list_conversations."""
+    from app.history.store import list_conversations
+
+    rows = list_conversations(session, limit=min(limit, 200))
+    return {
+        "conversations": [
+            {
+                "conversation_id": r["conversation_id"],
+                "title": r["title"],
+                "last_at": r["last_at"].isoformat() if r["last_at"] else None,
+                "message_count": r["message_count"],
+                "pinned": r["pinned"],
+            }
+            for r in rows
+        ]
+    }
+
+
+class PinRequest(BaseModel):
+    pinned: bool
+
+
+@app.put("/history/conversations/{conversation_id}/pin", dependencies=[Depends(require_bearer_token)])
+def history_conversation_pin_endpoint(
+    conversation_id: str, payload: PinRequest, session: Session = Depends(get_session)
+) -> dict:
+    from app.history.store import set_conversation_pinned
+
+    set_conversation_pinned(session, conversation_id, payload.pinned)
+    return {"conversation_id": conversation_id, "pinned": payload.pinned}
+
+
+@app.delete("/history/conversations/{conversation_id}", dependencies=[Depends(require_bearer_token)])
+def history_conversation_delete_endpoint(conversation_id: str, session: Session = Depends(get_session)) -> dict:
+    from app.history.store import delete_conversation
+
+    deleted = delete_conversation(session, conversation_id)
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="no such conversation")
+    return {"deleted": conversation_id, "messages": deleted}
 
 
 @app.get("/history/queries/{history_id}", dependencies=[Depends(require_bearer_token)])
@@ -422,6 +725,17 @@ def history_export_download_endpoint(
     )
 
 
+@app.get("/ingestion/progress", dependencies=[Depends(require_bearer_token)])
+def ingestion_progress_endpoint(session: Session = Depends(get_session)) -> dict:
+    """What the pipeline is doing right now: overall + per-folder counts,
+    jobs currently running (with elapsed time), failures with their
+    error, and the most recent completions. Backs the Progress page,
+    which polls it. See app/ingestion/progress.py."""
+    from app.ingestion.progress_query import get_ingestion_progress
+
+    return get_ingestion_progress(session, str(Path(settings.data_dir) / "raw"))
+
+
 @app.get("/stats", dependencies=[Depends(require_bearer_token)])
 def stats_endpoint(session: Session = Depends(get_session)) -> dict:
     """Overview metrics for the dashboard home page."""
@@ -430,7 +744,10 @@ def stats_endpoint(session: Session = Depends(get_session)) -> dict:
     return get_overview_stats(session, Path(settings.data_dir) / "raw")
 
 
-@app.get("/documents", dependencies=[Depends(require_bearer_token)])
+# Not "/documents": that is also the dashboard page's URL, so a refresh or
+# bookmark of the page would hit this endpoint and show raw JSON instead of
+# the app. Every API path must stay distinct from a dashboard route.
+@app.get("/documents/list", dependencies=[Depends(require_bearer_token)])
 def documents_endpoint(
     folder: str | None = None,
     status: str | None = None,

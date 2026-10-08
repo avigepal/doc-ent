@@ -35,12 +35,23 @@ class FolderStatus:
     summarized: int
     processing: bool
     has_failures: bool
+    # Files that can never be converted (.exe, .dll, ...). Not part of
+    # total_files, so a folder containing one can still reach "all done".
+    unsupported: int = 0
 
 
 def _bucket_for(buckets: dict[str, dict], name: str) -> dict:
     return buckets.setdefault(
         name,
-        {"total": 0, "discovered": 0, "converted": 0, "summarized": 0, "processing": False, "has_failures": False},
+        {
+            "total": 0,
+            "discovered": 0,
+            "converted": 0,
+            "summarized": 0,
+            "unsupported": 0,
+            "processing": False,
+            "has_failures": False,
+        },
     )
 
 
@@ -61,6 +72,9 @@ def build_folder_statuses(
         if folder is None:
             continue
         b = _bucket_for(buckets, folder)
+        if status == "unsupported":
+            b["unsupported"] += 1
+            continue
         b["total"] += 1
         if status in b:
             b[status] += 1
@@ -78,6 +92,7 @@ def build_folder_statuses(
             summarized=b["summarized"],
             processing=b["processing"],
             has_failures=b["has_failures"],
+            unsupported=b["unsupported"],
         )
         for name, b in sorted(buckets.items())
     ]

@@ -63,3 +63,18 @@ def test_answer_grounded_calls_llm_with_citation_context_when_above_threshold():
     system, user = llm.calls[0]
     assert "what is x?" in user
     assert "[1]" in user and "a.pdf" in user
+
+
+def test_user_facing_not_found_reply_avoids_internal_jargon():
+    assert "ingested" not in NOT_FOUND_MESSAGE.lower()
+    assert "corpus" not in NOT_FOUND_MESSAGE.lower()
+    assert "your documents" in NOT_FOUND_MESSAGE
+
+
+def test_prompt_tells_the_model_to_say_your_documents_not_ingested():
+    from app.search.ask import GROUNDED_SYSTEM_PROMPT
+
+    # the only mention of the jargon is the instruction not to use it
+    assert 'Never say "ingested"' in GROUNDED_SYSTEM_PROMPT
+    assert "couldn't find that in the user's documents" in GROUNDED_SYSTEM_PROMPT
+    assert "ingested documents" not in GROUNDED_SYSTEM_PROMPT

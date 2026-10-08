@@ -27,6 +27,8 @@ def query_record_to_summary(record: Any) -> dict[str, Any]:
         "filter_author": record.filter_author,
         "filter_title": record.filter_title,
         "attached_filenames": record.attached_filenames or [],
+        "chat_only": record.chat_only,
+        "conversation_id": record.conversation_id,
         "created_at": _iso(record.created_at),
     }
 

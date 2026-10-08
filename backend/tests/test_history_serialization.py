@@ -23,6 +23,8 @@ def _query_record(**overrides):
         filter_author=None,
         filter_title=None,
         attached_filenames=[],
+        chat_only=False,
+        conversation_id="abc-123",
         created_at=AT,
     )
     base.update(overrides)

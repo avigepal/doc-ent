@@ -16,6 +16,13 @@ from pathlib import Path
 from app.conversion.backends import ConversionBackend
 
 
+class EmptyConversionError(Exception):
+    """The backend ran without error but produced no text. Treated as a
+    failure: a "converted" file with an empty document can never be
+    searched, and it used to pass silently (0-byte .md, indexed as 0
+    chunks). Retrying can't help -- the same file gives the same result."""
+
+
 @dataclass(frozen=True)
 class StoredConversion:
     markdown_path: Path
@@ -32,6 +39,10 @@ def convert_and_store(
     extra_metadata: dict,
 ) -> StoredConversion:
     result = backend.convert(file_path)
+    if not result.markdown.strip():
+        raise EmptyConversionError(
+            f"{file_path.name}: conversion produced no text (scanned or image-only file, or unreadable)"
+        )
 
     relative = file_path.relative_to(raw_root)
     markdown_path = (converted_root / relative).with_suffix(".md")

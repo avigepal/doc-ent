@@ -15,10 +15,17 @@ x-backend-build: &backend-build
   # 10 near-identical-looking rows in `docker images`/Docker Desktop
   # even though they share layers and cost almost no extra disk. This
   # collapses that to one real build, one tag, ten containers from it.
+  #
+  # Only `api` carries the `build:` section (below). Giving it to every
+  # service made compose run the build once per service -- all but the
+  # first are cache hits, but each still pays for context transfer and
+  # image export. The workers just use the tag api builds.
+  #
+  # pull_policy: never -- doc-worker only exists locally. Without it,
+  # `up --build` tries to pull the workers' image from Docker Hub before
+  # api has finished building it, and fails with "pull access denied".
   image: doc-worker:latest
-  build:
-    context: .
-    dockerfile: backend/Dockerfile
+  pull_policy: never
   env_file: .env
   volumes:
     # HOST_DATA_DIR (compose-interpolation var, host-side path) is
@@ -26,9 +33,27 @@ x-backend-build: &backend-build
     # path the app reads via Settings) — they used to collide, which
     # silently bind-mounted the wrong host folder. Keep them distinct.
     - ${HOST_DATA_DIR:-./data}:/data/pipeline
+    # Docling downloads its layout/table/OCR model weights on first use.
+    # Without these volumes they live in the container's writable layer, so
+    # every `up --build` (new container) downloads them all again.
+    - model-cache:/root/.cache
+    - easyocr-cache:/root/.EasyOCR
   depends_on:
     - postgres
     - redis
+
+x-gpu-deploy: &gpu-deploy
+  # Gives a container one NVIDIA GPU (needs the NVIDIA Container Toolkit on
+  # the host). Used only by the Docling converters (layout/table/OCR models
+  # run on torch) -- the LLM and embeddings run in llama-server, outside
+  # compose, with their own CUDA. DOC_GPU_ID picks which GPU; llama-server
+  # already fills both, so check `nvidia-smi` for free VRAM first.
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          device_ids: ["${DOC_GPU_ID:-0}"]
+          capabilities: [gpu]
 
 services:
   # ---------- infra ----------
@@ -64,6 +89,9 @@ services:
   # ---------- API (phase 1 — working now) ----------
   api:
     <<: *backend-build
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
@@ -71,10 +99,27 @@ services:
   # ---------- Celery workers (stubs until phase 2/3/4 are built) ----------
   celery-convert-fast:
     <<: *backend-build
+    deploy: *gpu-deploy
+    environment:
+      # load Docling's models at worker start, not on the first upload
+      WARM_UP_DOCLING: "1"
     command: celery -A app.celery_app worker -Q convert_fast -c 2
+
+  # Upload lane: files added from the dashboard are converted and indexed
+  # here, on their own queue, so they never wait behind bulk-ingest work on
+  # celery-convert-fast. Same image and GPU access as the converter (Docling
+  # runs here too) -- lower -c if VRAM is tight, each process holds its own
+  # copy of the Docling models.
+  celery-upload:
+    <<: *backend-build
+    command: celery -A app.celery_app worker -Q upload -c 2
+    deploy: *gpu-deploy
+    environment:
+      WARM_UP_DOCLING: "1"
 
   celery-convert-ocr:
     <<: *backend-build
+    deploy: *gpu-deploy
     command: celery -A app.celery_app worker -Q convert_ocr -c 1
 
   celery-convert-vision:
@@ -138,3 +183,5 @@ services:
 
 volumes:
   pgdata:
+  model-cache:
+  easyocr-cache:

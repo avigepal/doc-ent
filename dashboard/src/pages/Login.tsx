@@ -25,7 +25,7 @@ export function Login() {
       >
         <p className={label}>Access slip</p>
         <h1 className="font-display mt-2 text-xl font-semibold tracking-tight">
-          DOC<span className="text-[var(--index)]">/</span>INDEX
+          DOC<span className="text-[var(--index)]">·</span>ENT
         </h1>
         <p className={`mt-1 mb-6 text-sm ${muted}`}>Enter the API token to open the corpus.</p>
 

@@ -1,4 +1,4 @@
-# Doc Summarization Pipeline
+# Docent
 
 Local-only pipeline: ingest a mixed document corpus, convert + summarize it
 with llama.cpp-served local models, and serve search/correlation reports
@@ -10,7 +10,7 @@ Tailscale-only network until fully built, then exposed to the office LAN.
 | Phase | Scope | Status |
 |---|---|---|
 | 1. Ingestion foundation | manifest walker, handler registry, pre-run summary | ✅ built, tested |
-| 2. Conversion pipeline | Docling (`convert_fast`), email archives (`convert_email_archive`: .eml/.mbox/.msg/.pst) | ✅ built, tested; Marker/Tika fallback + `convert_ocr`/`convert_vision` still 🚧 (need Tesseract probe + llama-server) |
+| 2. Conversion pipeline | Docling (`convert_fast`), email archives (`convert_email_archive`: .eml/.mbox/.msg/.pst) | ✅ built, tested, incl. image conversion via the vision model; Marker/Tika fallback + `convert_ocr` still 🚧 |
 | 3. Summarization | chunking, map-summarize, hierarchical reduce (file-level) | ✅ built, tested; group/final reduce 🚧 (blocked on grouping-strategy decision) |
 | 4. Search + correlation | pgvector retrieval, folder-scoped (search only selected top-level `raw/` folders); unified `/query` (grounded answer + cross-doc + statistical in one call) | ✅ built, tested; statistical mode's spreadsheet `tables` input 🚧 (not yet wired to a source) |
 | 5. Output & hardening | pandoc PDF-first export (xelatex), ad-hoc export (download a query result directly, no saved file needed) | ✅ built, tested, **verified live** (real PDF produced through the API) — pandoc reference template + systemd/boot hardening ⬜ not started |
@@ -155,9 +155,15 @@ Enqueues `convert_fast` (Docling) and `convert_email_archive` (.eml/.mbox/
 every file routed to those queues. Output lands in `DATA_DIR/converted/`,
 mirroring `raw/`'s folder structure, as a `.md` file plus a `.md.json`
 metadata sidecar (sha256, mime type, engine used, char count, timestamp).
-`convert_ocr` / `convert_vision` are not wired up yet — those files stay
-in `discovered` status until the Tesseract text-density probe and
-llama-server vision call are built.
+Standalone images (PNG/JPEG/TIFF/BMP/WebP) go through `convert_vision`: the
+image is downscaled and sent to the vision model on llama-server
+(`LLAMA_VISION_URL` / `LLAMA_VISION_MODEL`; the model must be started with its
+`mmproj`), which returns the visible text plus a description as Markdown.
+If llama-server is unreachable the job keeps retrying with backoff rather
+than failing the file. Scanned PDFs are OCR'd by Docling inside `convert_fast`.
+`convert_ocr` is not wired up yet — files on that queue, and any file type
+the pipeline can't convert (.exe, .dll, archives...), get status
+`unsupported` and are never queued.
 
 ## Run the backend tests directly (no Docker needed)
 

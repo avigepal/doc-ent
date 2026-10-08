@@ -1,4 +1,8 @@
-import { card, label, muted } from "../ui";
+import { FileText, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+import { buttonSecondary, card, label, muted } from "../ui";
+import { Markdown } from "./Markdown";
 
 export interface ResultCardData {
   question: string;
@@ -17,22 +21,98 @@ export function shortenSource(path: string): string {
   return idx === -1 ? path : path.slice(idx + marker.length);
 }
 
-/** The signature element: clipped-corner index tabs for citations. Kept
- * from the original archive identity because citations are the heart of
- * a RAG result. */
-function SourceTabs({ sources }: { sources: string[] }) {
-  if (sources.length === 0) return null;
+function SourceList({ sources }: { sources: string[] }) {
   return (
-    <div className="mt-3 flex flex-wrap gap-1.5">
+    <ol className="mt-2 space-y-1.5">
       {sources.map((source, i) => (
-        <span
-          key={source}
-          className="font-mono border border-[var(--line)] bg-[var(--locator-soft)] px-2 py-0.5 text-[11px] text-[var(--ink)]"
-          style={{ clipPath: "polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 0 100%)" }}
-        >
-          [{i + 1}] {shortenSource(source)}
-        </span>
+        <li key={source} className="flex items-baseline gap-2.5">
+          <span className={`font-mono text-[11px] tabular-nums ${muted}`}>[{i + 1}]</span>
+          <span className="min-w-0">
+            <span className="block break-words text-[13px] font-medium text-[var(--ink)]">
+              {shortenSource(source).split("/").pop()}
+            </span>
+            <span className={`font-mono block break-all text-[11px] ${muted}`}>{shortenSource(source)}</span>
+          </span>
+        </li>
       ))}
+    </ol>
+  );
+}
+
+/** Rendered into document.body (like the Ask help dialog) so it covers the
+ * fixed header and isn't clipped by a card's stacking context. */
+function SourcesModal({ result, onClose }: { result: ResultCardData; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const crossDocSources = result.cross_doc?.sources ?? [];
+
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="sources-title"
+        onClick={(e) => e.stopPropagation()}
+        className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-lg border border-[var(--line)] bg-[var(--paper)] p-5 shadow-xl"
+      >
+        <div className="flex items-start justify-between gap-4">
+          <h2 id="sources-title" className="font-display text-base font-semibold tracking-tight">
+            Sources
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            autoFocus
+            className="cursor-pointer rounded p-0.5 text-[var(--ink-soft)] hover:text-[var(--ink)]"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <p className={`mt-1 text-xs ${muted}`}>Documents this answer was based on. [n] matches the citation numbers.</p>
+
+        {result.sources.length > 0 && (
+          <div className="mt-4">
+            <p className={label}>Answer</p>
+            <SourceList sources={result.sources} />
+          </div>
+        )}
+
+        {crossDocSources.length > 0 && (
+          <div className="mt-4 border-t border-[var(--line)] pt-4">
+            <p className={label}>Cross-document findings</p>
+            <SourceList sources={crossDocSources} />
+          </div>
+        )}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** Shown inside the card while the model is still working, so the box is
+ * never just an empty frame. Before the sources arrive it is searching; after,
+ * the model is reading them (a reasoning model can take a while before its
+ * first word). */
+function Thinking({ label: text }: { label: string }) {
+  return (
+    <div role="status" aria-live="polite" className={`mt-3 flex items-center gap-2.5 text-[13px] ${muted}`}>
+      <span className="flex items-center gap-1" aria-hidden="true">
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="size-1.5 rounded-full bg-[var(--index)] motion-safe:animate-pulse"
+            style={{ animationDelay: `${i * 180}ms`, animationDuration: "1s" }}
+          />
+        ))}
+      </span>
+      {text}
     </div>
   );
 }
@@ -40,42 +120,87 @@ function SourceTabs({ sources }: { sources: string[] }) {
 export function ResultCard({
   result,
   actions,
+  chatOnly = false,
+  pending = false,
 }: {
   result: ResultCardData;
   actions?: React.ReactNode;
+  /** True while this answer is still being generated: shows a loader instead
+   * of an empty box and holds back the action buttons until it's done. */
+  pending?: boolean;
+  /** True when this answer came from a direct model chat with no corpus
+   * scope selected — distinguishes "nothing was searched" from the
+   * grounded-but-no-match case below, which otherwise look identical
+   * (both have grounded: false). */
+  chatOnly?: boolean;
 }) {
+  const [showSources, setShowSources] = useState(false);
+
+  const sourceCount = new Set([...result.sources, ...(result.cross_doc?.sources ?? [])]).size;
+
   return (
     <div className={card}>
       <p className={label}>Answer</p>
-      {!result.grounded && (
+      {!chatOnly && !result.grounded && !pending && (
         <p className={`font-mono mt-1 text-[11px] ${muted}`}>
-          Not grounded — no corpus source matched closely enough.
+          No matching document was found for this question.
         </p>
       )}
-      <p className="mt-2 whitespace-pre-wrap">{result.answer}</p>
-      <SourceTabs sources={result.sources} />
+      {result.answer ? (
+        <div className="mt-2">
+          <Markdown>{result.answer}</Markdown>
+        </div>
+      ) : pending ? (
+        <Thinking
+          label={
+            chatOnly
+              ? "Thinking…"
+              : result.sources.length === 0
+                ? "Searching your documents…"
+                : "Reading the sources and writing the answer…"
+          }
+        />
+      ) : (
+        <p className={`mt-2 text-[13px] ${muted}`}>No answer was generated. Try regenerating.</p>
+      )}
 
       {result.cross_doc && (
         <div className="mt-5 border-t border-[var(--line)] pt-4">
           <p className={label}>Cross-document findings</p>
-          <p className="mt-2 whitespace-pre-wrap">{result.cross_doc.answer}</p>
-          <SourceTabs sources={result.cross_doc.sources} />
+          <div className="mt-2">
+            <Markdown>{result.cross_doc.answer}</Markdown>
+          </div>
         </div>
       )}
 
       {result.statistical && (
         <div className="mt-5 border-t border-[var(--line)] pt-4">
           <p className={label}>Statistical findings</p>
-          <p className="mt-2 whitespace-pre-wrap">{result.statistical.answer}</p>
+          <div className="mt-2">
+            <Markdown>{result.statistical.answer}</Markdown>
+          </div>
           <pre className="font-mono mt-2 whitespace-pre-wrap rounded border border-[var(--line)] bg-[var(--locator-soft)] p-2.5 text-[11px]">
             {result.statistical.correlation_summary}
           </pre>
         </div>
       )}
 
-      {actions && (
-        <div className="mt-5 flex items-center gap-2 border-t border-[var(--line)] pt-4">{actions}</div>
+      {!pending && (actions || sourceCount > 0) && (
+        <div className="mt-5 flex items-center gap-2 border-t border-[var(--line)] pt-4">
+          {actions}
+          {sourceCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowSources(true)}
+              className={`${buttonSecondary} ml-auto inline-flex items-center gap-1.5`}
+            >
+              <FileText size={13} /> Sources ({sourceCount})
+            </button>
+          )}
+        </div>
       )}
+
+      {showSources && <SourcesModal result={result} onClose={() => setShowSources(false)} />}
     </div>
   );
 }

@@ -145,3 +145,36 @@ def test_correlate_runs_neither_when_single_file_and_no_tables():
     assert report.cross_doc is None
     assert report.statistical is None
     assert llm.calls == []
+
+
+def test_wants_cross_document_only_for_comparison_style_questions():
+    from app.search.correlate import wants_cross_document
+
+    for question in (
+        "compare the Mac Studio and the custom PC",
+        "Mac Studio vs custom PC",
+        "what are the differences between the two quotes?",
+        "do these documents contradict each other?",
+        "how do these relate?",
+        "what trends appear across the documents?",
+        "what do both files say about power?",
+    ):
+        assert wants_cross_document(question), question
+
+    for question in (
+        "how do I enable wake-on-lan?",
+        "what is python",
+        "summarize the api doc",
+        "which BIOS settings should I check?",
+    ):
+        assert not wants_cross_document(question), question
+
+
+def test_correlate_skips_cross_doc_when_disabled():
+    llm = FakeLLM()
+    chunks = [_chunk("a.pdf", "H", "x"), _chunk("b.pdf", "H", "y")]
+
+    report = correlate("question", chunks, {}, llm, cross_doc_enabled=False)
+
+    assert report.cross_doc is None
+    assert llm.calls == []

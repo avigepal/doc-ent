@@ -101,7 +101,7 @@ def build() -> Path:
 
     wordmark = doc.add_paragraph()
     wordmark.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    wm_run = wordmark.add_run("DOC/INDEX — INTELLIGENT REPORT")
+    wm_run = wordmark.add_run("DOCENT — INTELLIGENT REPORT")
     wm_run.font.name = "Calibri"
     wm_run.font.size = Pt(11)
     wm_run.font.bold = True

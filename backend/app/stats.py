@@ -40,6 +40,7 @@ def build_overview(
             "converted": status_counts.get("converted", 0),
             "summarized": status_counts.get("summarized", 0),
             "failed": status_counts.get("failed", 0),
+            "unsupported": status_counts.get("unsupported", 0),
         },
         "chunks": chunk_count,
         "storage_bytes": storage_bytes,

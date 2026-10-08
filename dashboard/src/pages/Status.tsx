@@ -1,3 +1,4 @@
+import { Loader2 } from "lucide-react";
 import { useState } from "react";
 import { api, ApiError } from "../api/client";
 import { buttonSecondary, card, errorText, label, muted, pageTitle, tableCell, tableHeader } from "../ui";
@@ -88,8 +89,9 @@ export function Status() {
           <li key={step.n} className="flex items-center gap-4 border-[var(--line)] py-2" style={i > 0 ? { borderTopWidth: 1 } : undefined}>
             <span className="font-mono w-7 shrink-0 text-sm text-[var(--index)]">{step.n}</span>
             <span className="flex-1 font-medium">{step.label}</span>
-            <button onClick={() => run(step)} disabled={busy !== null} className={buttonSecondary}>
-              {busy === step.n ? step.busyLabel + "…" : "Run"}
+            <button onClick={() => run(step)} disabled={busy !== null} className={`${buttonSecondary} flex items-center gap-1.5`}>
+              {busy === step.n && <Loader2 size={12} className="animate-spin" />}
+              {busy === step.n ? step.busyLabel : "Run"}
             </button>
           </li>
         ))}

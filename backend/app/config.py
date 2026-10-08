@@ -37,6 +37,36 @@ class Settings(BaseSettings):
     # schedule entirely (manual /ingest/* calls still work either way).
     auto_ingest_interval_seconds: int = 60
 
+    # Summarizing a file is many sequential LLM calls and is by far the
+    # slowest stage; search doesn't need it. False makes auto-ingest stop
+    # after convert + index (the manual /ingest/summarize still works).
+    auto_summarize: bool = True
+
+    # Docling (PDF/Office conversion) speed vs. fidelity -- see
+    # app/conversion/backends.py. Defaults match Docling's own.
+    # docling_ocr: OCR text inside images/scans. Off = faster, but scanned
+    #   pages and screenshots-in-PDFs come out with no text.
+    # docling_tables: rebuild table structure. Off = faster, but tables
+    #   come out as plain text.
+    # docling_table_mode: "fast" or "accurate" (slower, better on complex tables).
+    # docling_page_batch_size: pages the models process per batch; 0 =
+    #   Docling's default (4). Raise it (8, 16) to use the GPU better, as
+    #   far as VRAM allows.
+    docling_ocr: bool = True
+    docling_tables: bool = True
+    docling_table_mode: str = "fast"
+    docling_page_batch_size: int = 0
+
+    # Chunks sent to the embedding server per request while indexing.
+    # Bigger = fewer round trips, until the server's batch/slot limits.
+    embed_batch_size: int = 16
+
+    # A file queued for a stage isn't queued for it again for this long --
+    # see app/queue_guard.py. Longer than a typical backlog takes to drain
+    # keeps the queue free of duplicates; the tasks skip finished work, so a
+    # too-short value only wastes a few no-op tasks.
+    queue_dedupe_seconds: int = 1800
+
     @property
     def database_url(self) -> str:
         return (

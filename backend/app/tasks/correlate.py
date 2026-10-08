@@ -32,7 +32,7 @@ from app.search.ask import answer_grounded
 from app.search.correlate import correlate as run_correlate
 from app.search.embedding_client import EmbeddingClient
 from app.search.pgvector_retrieval import retrieve_top_k
-from app.search.query import run_query
+from app.search.query import run_chat, run_query
 from app.summarization.llm_client import LlamaClient
 
 _embedder = EmbeddingClient(
@@ -68,12 +68,37 @@ def query(
     folders: list[str] | None = None,
     author: str | None = None,
     title: str | None = None,
+    chat_only: bool = False,
+    file_ids: list[int] | None = None,
 ) -> dict:
+    """chat_only=True skips retrieval entirely (the dashboard's Scope bar
+    with nothing selected — "talk to the model directly") -- see
+    app/search/query.py:run_chat. Otherwise this is the normal grounded +
+    correlation path: folders=None/[] searches the whole corpus, a
+    non-empty list scopes retrieval to those top-level raw/ folders."""
+    if chat_only:
+        result = run_chat(question, _text_llm)
+        return {
+            "question": result.question,
+            "answer": result.answer,
+            "sources": result.sources,
+            "grounded": result.grounded,
+            **_correlation_report_to_dict(result),
+        }
+
     session = SessionLocal()
     try:
         [query_embedding] = _embedder.embed([question])
         chunks = retrieve_top_k(
-            session, query_embedding, k=k, raw_dir=_raw_dir, folders=folders, author=author, title=title
+            session,
+            query_embedding,
+            k=k,
+            raw_dir=_raw_dir,
+            folders=folders,
+            author=author,
+            title=title,
+            query_text=question,
+            file_ids=file_ids,
         )
         # TODO: populate from persisted spreadsheet pre-aggregation once
         # that storage exists; statistical mode is a no-op until then.
@@ -102,7 +127,14 @@ def ask(
     try:
         [query_embedding] = _embedder.embed([question])
         chunks = retrieve_top_k(
-            session, query_embedding, k=k, raw_dir=_raw_dir, folders=folders, author=author, title=title
+            session,
+            query_embedding,
+            k=k,
+            raw_dir=_raw_dir,
+            folders=folders,
+            author=author,
+            title=title,
+            query_text=question,
         )
         result = answer_grounded(question, chunks, _text_llm)
         return {"answer": result.answer, "sources": result.sources, "grounded": result.grounded}
@@ -122,7 +154,14 @@ def correlate(
     try:
         [query_embedding] = _embedder.embed([question])
         chunks = retrieve_top_k(
-            session, query_embedding, k=k, raw_dir=_raw_dir, folders=folders, author=author, title=title
+            session,
+            query_embedding,
+            k=k,
+            raw_dir=_raw_dir,
+            folders=folders,
+            author=author,
+            title=title,
+            query_text=question,
         )
         tables: dict = {}
         report = run_correlate(question, chunks, tables, _text_llm)

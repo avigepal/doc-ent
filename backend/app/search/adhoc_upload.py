@@ -73,7 +73,7 @@ def convert_upload_to_chunks(
         tmp_path = Path(tmp.name)
 
     try:
-        backend = _email_backend if suffix in _EMAIL_EXTENSIONS else resolve_conversion_backend(mime_type)
+        backend = _email_backend if suffix in _EMAIL_EXTENSIONS else resolve_conversion_backend(mime_type, filename)
         result = backend.convert(tmp_path)
     finally:
         tmp_path.unlink(missing_ok=True)

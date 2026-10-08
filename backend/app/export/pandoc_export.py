@@ -4,7 +4,7 @@ PDF is the default/primary export format; .docx and .json stay available
 as secondary options (per your answer: "PDF primary, others kept").
 
 PDF goes through two steps: pandoc converts markdown -> styled HTML (via
-report.html, which supplies the "Doc/Index" title block, colored section
+report.html, which supplies the "Docent" title block, colored section
 rules, chip-style citations and table styling), then weasyprint renders
 that HTML -> PDF. CSS instead of a LaTeX template specifically because
 chips/badges/colored boxes are native to CSS, and it reuses the same
@@ -27,7 +27,7 @@ EXPORT_FORMATS = ("pdf", "docx", "json")
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
-# "Doc/Index" styled report assets (title block, colored section rules,
+# "Docent" styled report assets (title block, colored section rules,
 # citation-matching accent colors, footer, table styling) instead of
 # pandoc's/weasyprint's bare defaults — see report.html/reference.docx.
 _PDF_HTML_TEMPLATE = _TEMPLATES_DIR / "report.html"

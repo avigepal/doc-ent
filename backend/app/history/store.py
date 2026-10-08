@@ -8,10 +8,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import aggregate_order_by
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.models import ExportHistoryRecord, QueryHistoryRecord
+from app.models import ConversationPin, ExportHistoryRecord, QueryHistoryRecord
 
 
 def record_query(
@@ -23,6 +25,8 @@ def record_query(
     author: str | None = None,
     title: str | None = None,
     attached_filenames: list[str] | None = None,
+    chat_only: bool = False,
+    conversation_id: str = "",
 ) -> int:
     """Stores a completed query result and returns the new row's id, which
     the endpoint hands back to the client so a later /export can link to
@@ -38,6 +42,8 @@ def record_query(
         filter_author=author,
         filter_title=title,
         attached_filenames=attached_filenames or [],
+        chat_only=chat_only,
+        conversation_id=conversation_id,
     )
     session.add(record)
     session.commit()
@@ -65,14 +71,77 @@ def record_export(
     return record.id
 
 
-def list_queries(session: Session, limit: int = 50, offset: int = 0) -> list[QueryHistoryRecord]:
-    stmt = (
-        select(QueryHistoryRecord)
-        .order_by(QueryHistoryRecord.created_at.desc())
-        .limit(limit)
-        .offset(offset)
-    )
+def list_queries(
+    session: Session, limit: int = 50, offset: int = 0, conversation_id: str | None = None
+) -> list[QueryHistoryRecord]:
+    stmt = select(QueryHistoryRecord).order_by(QueryHistoryRecord.created_at.desc())
+    if conversation_id is not None:
+        stmt = stmt.where(QueryHistoryRecord.conversation_id == conversation_id)
+    stmt = stmt.limit(limit).offset(offset)
     return list(session.execute(stmt).scalars())
+
+
+def list_conversations(session: Session, limit: int = 50) -> list[dict]:
+    """One row per conversation_id (the Ask page's "chats" list in the
+    sidebar) — title is the opening question (array_agg ordered by
+    created_at ASC, first element), not the most recent one, so it reads
+    like a chat title rather than changing every time the conversation
+    gets a new message. '' (rows from before this column existed) is
+    excluded — those are legacy, ungrouped history, not a real chat.
+    Pinned chats come first (most recently pinned on top), then the rest
+    by latest activity."""
+    title = func.array_agg(aggregate_order_by(QueryHistoryRecord.question, QueryHistoryRecord.created_at.asc()))[1]
+    stmt = (
+        select(
+            QueryHistoryRecord.conversation_id,
+            title.label("title"),
+            func.max(QueryHistoryRecord.created_at).label("last_at"),
+            func.count().label("message_count"),
+            ConversationPin.pinned_at,
+        )
+        .select_from(QueryHistoryRecord)
+        .outerjoin(ConversationPin, ConversationPin.conversation_id == QueryHistoryRecord.conversation_id)
+        .where(QueryHistoryRecord.conversation_id != "")
+        .group_by(QueryHistoryRecord.conversation_id, ConversationPin.pinned_at)
+        .order_by(ConversationPin.pinned_at.desc().nulls_last(), func.max(QueryHistoryRecord.created_at).desc())
+        .limit(limit)
+    )
+    rows = session.execute(stmt).all()
+    return [
+        {
+            "conversation_id": r.conversation_id,
+            "title": r.title,
+            "last_at": r.last_at,
+            "message_count": r.message_count,
+            "pinned": r.pinned_at is not None,
+        }
+        for r in rows
+    ]
+
+
+def set_conversation_pinned(session: Session, conversation_id: str, pinned: bool) -> None:
+    if pinned:
+        session.execute(
+            pg_insert(ConversationPin).values(conversation_id=conversation_id).on_conflict_do_nothing()
+        )
+    else:
+        session.execute(delete(ConversationPin).where(ConversationPin.conversation_id == conversation_id))
+    session.commit()
+
+
+def delete_conversation(session: Session, conversation_id: str) -> int:
+    """Removes every message in the chat (and its pin); returns how many
+    messages went. '' is refused — that's the bucket of legacy rows from
+    before conversations existed, not a chat, and "delete conversation ''"
+    must never wipe all of them."""
+    if not conversation_id:
+        return 0
+    result = session.execute(
+        delete(QueryHistoryRecord).where(QueryHistoryRecord.conversation_id == conversation_id)
+    )
+    session.execute(delete(ConversationPin).where(ConversationPin.conversation_id == conversation_id))
+    session.commit()
+    return result.rowcount
 
 
 def get_query(session: Session, history_id: int) -> QueryHistoryRecord | None:

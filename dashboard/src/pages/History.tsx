@@ -108,7 +108,7 @@ export function History() {
           {queries.map((entry) => (
             <tr key={entry.id}>
               <td className={tableCell}>
-                <button className="text-left hover:text-[var(--index)]" onClick={() => openEntry(entry.id)}>
+                <button className="cursor-pointer text-left hover:text-[var(--index)]" onClick={() => openEntry(entry.id)}>
                   {entry.question}
                 </button>
               </td>

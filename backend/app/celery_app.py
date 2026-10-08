@@ -8,6 +8,8 @@ celery_app.conf.task_routes = {
     "app.tasks.convert.*": {"queue": "convert_fast"},
     "app.tasks.summarize.*": {"queue": "summarize"},
     "app.tasks.correlate.*": {"queue": "correlate"},
+    # shares the correlate worker, which already reaches the embedding server
+    "app.tasks.index.*": {"queue": "correlate"},
     "app.tasks.auto_ingest.*": {"queue": "auto_ingest"},
 }
 
@@ -25,4 +27,6 @@ if settings.auto_ingest_interval_seconds > 0:
 import app.tasks.convert  # noqa: E402,F401
 import app.tasks.summarize  # noqa: E402,F401
 import app.tasks.correlate  # noqa: E402,F401
+import app.tasks.index  # noqa: E402,F401
 import app.tasks.auto_ingest  # noqa: E402,F401
+import app.job_cleanup  # noqa: E402,F401

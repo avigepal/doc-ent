@@ -11,10 +11,10 @@ export const input =
   "rounded border border-[var(--line)] bg-[var(--paper)] px-2.5 py-1.5 text-[13px] text-[var(--ink)] placeholder:text-[var(--ink-soft)] focus:border-[var(--index)] focus:outline-none transition-colors";
 
 export const button =
-  "rounded bg-[var(--index)] px-3 py-1.5 text-[13px] font-medium text-[var(--paper)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 transition-opacity";
+  "rounded bg-[var(--index)] px-3 py-1.5 text-[13px] font-medium text-[var(--paper)] hover:opacity-90 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 transition-opacity";
 
 export const buttonSecondary =
-  "rounded border border-[var(--line)] px-2.5 py-1 text-xs text-[var(--ink)] hover:border-[var(--index)] hover:text-[var(--index)] disabled:opacity-40 transition-colors";
+  "rounded border border-[var(--line)] px-2.5 py-1 text-xs text-[var(--ink)] hover:border-[var(--index)] hover:text-[var(--index)] cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 transition-colors";
 
 export const card =
   "rounded border border-[var(--line)] bg-[var(--paper)] p-4";

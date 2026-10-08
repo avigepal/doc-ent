@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api, ApiError, type DocumentRow, type FolderStatus } from "../api/client";
 import { errorText, input, label, muted, pageTitle, tableCell, tableHeader } from "../ui";
 
-const STATUSES = ["discovered", "converted", "summarized", "failed"];
+const STATUSES = ["discovered", "converted", "summarized", "failed", "unsupported"];
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

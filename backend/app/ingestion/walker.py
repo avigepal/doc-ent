@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-from app.handlers.registry import route_mime
+from app.handlers.registry import UNSUPPORTED, route_mime
 
 try:
     import magic
@@ -32,6 +32,18 @@ class ScannedFile:
     mime_type: str
     size_bytes: int
     queue: str
+    mtime_ns: int = 0
+
+
+@dataclass(frozen=True)
+class KnownFile:
+    """What a previous scan recorded about a file. When size and mtime still
+    match, the file is assumed unchanged and isn't read again."""
+
+    size_bytes: int
+    mtime_ns: int | None
+    mime_type: str
+    sha256: str
 
 
 def _hash_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
@@ -57,7 +69,48 @@ def _detect_mime(path: Path) -> str:
     return guessed or "application/octet-stream"
 
 
-def scan_directory(root: Path) -> Iterator[ScannedFile]:
+def scan_file(path: Path, known: KnownFile | None = None) -> ScannedFile:
+    """Hash + classify one file. Split out of scan_directory so a handful of
+    freshly uploaded files can be registered without re-walking (and
+    re-hashing) the entire corpus.
+
+    `known` is the previous scan's record of this file: if its size and
+    mtime are unchanged the stored hash and type are reused, so the
+    auto-ingest tick (every minute) costs a stat() per file instead of
+    reading every byte of the corpus each time."""
+    path = Path(path)
+    stat = path.stat()
+
+    if known is not None and known.mtime_ns == stat.st_mtime_ns and known.size_bytes == stat.st_size:
+        # routing is recomputed from the stored type, so a routing change
+        # in a new release still takes effect on unchanged files
+        queue = route_mime(known.mime_type, filename=path.name)
+        if queue == UNSUPPORTED or known.sha256:
+            return ScannedFile(
+                path=str(path),
+                sha256="" if queue == UNSUPPORTED else known.sha256,
+                mime_type=known.mime_type,
+                size_bytes=stat.st_size,
+                queue=queue,
+                mtime_ns=stat.st_mtime_ns,
+            )
+
+    mime_type = _detect_mime(path)
+    queue = route_mime(mime_type, filename=path.name)
+
+    return ScannedFile(
+        path=str(path),
+        # Unsupported files are never converted, so skip reading them in
+        # full just to hash them (could be multi-GB installers/videos).
+        sha256="" if queue == UNSUPPORTED else _hash_file(path),
+        mime_type=mime_type,
+        size_bytes=stat.st_size,
+        queue=queue,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+
+def scan_directory(root: Path, known: dict[str, KnownFile] | None = None) -> Iterator[ScannedFile]:
     root = Path(root)
     if not root.exists():
         return
@@ -65,14 +118,4 @@ def scan_directory(root: Path) -> Iterator[ScannedFile]:
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-
-        mime_type = _detect_mime(path)
-        queue = route_mime(mime_type, filename=path.name)
-
-        yield ScannedFile(
-            path=str(path),
-            sha256=_hash_file(path),
-            mime_type=mime_type,
-            size_bytes=path.stat().st_size,
-            queue=queue,
-        )
+        yield scan_file(path, known.get(str(path)) if known else None)
