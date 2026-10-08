@@ -29,18 +29,34 @@ class LlamaClient:
         self._model = model
         self._api_key = api_key
 
-    def chat(self, system: str, user: str, temperature: float = 0.2) -> str:
+    def chat(
+        self,
+        system: str,
+        user: str,
+        temperature: float = 0.2,
+        max_tokens: int | None = None,
+        extra_body: dict | None = None,
+    ) -> str:
+        """`max_tokens` caps the reply; `extra_body` merges extra fields into
+        the request (e.g. a JSON `response_format`, or
+        `chat_template_kwargs` to switch a reasoning model's thinking off).
+        llama-server ignores fields it doesn't know."""
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+        body: dict = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": temperature,
+        }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+        if extra_body:
+            body.update(extra_body)
         response = self._client.post(
             f"{self._base_url}/v1/chat/completions",
-            json={
-                "model": self._model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "temperature": temperature,
-            },
+            json=body,
             headers=headers,
         )
         response.raise_for_status()
@@ -82,24 +98,33 @@ class LlamaClient:
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"] or ""
 
-    def chat_stream(self, system: str, user: str, temperature: float = 0.2) -> Iterator[str]:
+    def chat_stream(
+        self,
+        system: str,
+        user: str,
+        temperature: float = 0.2,
+        extra_body: dict | None = None,
+    ) -> Iterator[str]:
         """Same request as chat(), but with stream=True — yields each
         token/delta as it arrives instead of waiting for the full
         response. OpenAI-compatible SSE: lines shaped "data: {...}",
         terminated by a literal "data: [DONE]" line."""
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+        body: dict = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": temperature,
+            "stream": True,
+        }
+        if extra_body:
+            body.update(extra_body)
         with self._client.stream(
             "POST",
             f"{self._base_url}/v1/chat/completions",
-            json={
-                "model": self._model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "temperature": temperature,
-                "stream": True,
-            },
+            json=body,
             headers=headers,
         ) as response:
             response.raise_for_status()

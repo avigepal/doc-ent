@@ -5,6 +5,8 @@ import {
   api,
   ApiError,
   downloadExport,
+  downloadGeneratedFile,
+  type GeneratedFile,
   type QueryHistoryDetail,
   type QueryResult,
   type UploadStage,
@@ -164,6 +166,7 @@ function historyDetailToEntry(d: QueryHistoryDetail): { id: string; result: Quer
       grounded: d.grounded,
       cross_doc: d.cross_doc,
       statistical: d.statistical,
+      files: d.files ?? [],
       history_id: d.id,
     },
     chatOnly: d.chat_only,
@@ -187,7 +190,9 @@ export function Ask() {
   // input itself clears after a submit. `folders` is the scope each turn
   // actually ran with, kept per-entry (not read from current state) so
   // Regenerate replays the same scope even if Scope has changed since.
-  const [thread, setThread] = useState<{ id: string; result: QueryResult; chatOnly: boolean; folders: string[]; fileIds?: number[] }[]>(
+  const [thread, setThread] = useState<
+    { id: string; result: QueryResult; chatOnly: boolean; folders: string[]; fileIds?: number[]; statusText?: string }[]
+  >(
     [],
   );
   const [loading, setLoading] = useState(false);
@@ -381,10 +386,11 @@ export function Ask() {
     folders: string[],
     chatOnly: boolean,
     fileIds: number[] = [],
+    beforeHistoryId?: number,
   ) => {
     await api.queryStream(
       question,
-      { folders, chatOnly, fileIds, conversationId: conversationId ?? undefined },
+      { folders, chatOnly, fileIds, conversationId: conversationId ?? undefined, beforeHistoryId },
       {
         onMeta: (meta) =>
           setThread((prev) =>
@@ -408,7 +414,28 @@ export function Ask() {
           setThread((prev) =>
             prev.map((t) => (t.id === entryId ? { ...t, result: { ...t.result, history_id: historyId } } : t)),
           ),
+        // what the app decided to do, and its progress (shown in the loader)
+        onRoute: (route) =>
+          setThread((prev) => prev.map((t) => (t.id === entryId ? { ...t, statusText: route.label || undefined } : t))),
+        onStatus: (text) =>
+          setThread((prev) => prev.map((t) => (t.id === entryId ? { ...t, statusText: text } : t))),
+        // a file the assistant created: show its card and save it right away
+        onFile: (file) => {
+          setThread((prev) =>
+            prev.map((t) =>
+              t.id === entryId ? { ...t, result: { ...t.result, files: [...(t.result.files ?? []), file] } } : t,
+            ),
+          );
+          saveGeneratedFile(file);
+        },
       },
+    );
+  };
+
+  // Browsers may ask before the first automatic download; the file card's button covers that.
+  const saveGeneratedFile = (file: GeneratedFile) => {
+    downloadGeneratedFile(file).catch((err) =>
+      setError(err instanceof ApiError ? `${err.status}: ${err.message}` : "Couldn't save the generated file."),
     );
   };
 
@@ -455,7 +482,7 @@ export function Ask() {
     setThread((prev) =>
       prev.map((t) =>
         t.id === entryId
-          ? { ...t, result: { ...t.result, answer: "", sources: [], grounded: false, cross_doc: null, statistical: null } }
+          ? { ...t, statusText: undefined, result: { ...t.result, answer: "", sources: [], grounded: false, cross_doc: null, statistical: null, files: [] } }
           : t,
       ),
     );
@@ -468,7 +495,8 @@ export function Ask() {
         (entry.chatOnly || entry.folders.length > 0
           ? []
           : attachments.filter((a) => a.stage === "ready").map((a) => a.id));
-      await streamInto(entryId, entry.result.question, entry.folders, entry.chatOnly, fileIds);
+      // an edit continues from the reply before this one, never from this reply's own file
+      await streamInto(entryId, entry.result.question, entry.folders, entry.chatOnly, fileIds, entry.result.history_id);
     } catch (err) {
       setError(err instanceof ApiError ? `${err.status}: ${err.message}` : String(err));
     } finally {
@@ -524,7 +552,15 @@ export function Ask() {
             // The question sits on the right as a chat bubble; the answer card below stays on the left
             // (its width is capped by the [&>:last-child] rule so the two sides read as different speakers).
             <div key={entry.id} className="space-y-3 [&>:last-child]:max-w-4xl">
-              <div className="flex justify-end">
+              <div className="group flex items-center justify-end gap-1.5">
+                <button
+                  title="Copy prompt"
+                  aria-label="Copy prompt"
+                  onClick={() => handleCopy(`${entry.id}:prompt`, entry.result.question)}
+                  className="rounded-md p-1.5 text-[var(--ink-soft)] opacity-0 transition-opacity group-hover:opacity-100 hover:text-[var(--ink)] focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+                >
+                  {copiedId === `${entry.id}:prompt` ? <Check size={13} /> : <Copy size={13} />}
+                </button>
                 <p className="max-w-[85%] rounded-2xl rounded-br-md bg-[var(--index-soft)] px-4 py-2.5 text-[14px] leading-relaxed break-words whitespace-pre-wrap text-[var(--ink)] sm:max-w-[70%]">
                   {entry.result.question}
                 </p>
@@ -533,6 +569,8 @@ export function Ask() {
                 result={entry.result}
                 chatOnly={entry.chatOnly}
                 pending={(loading && index === thread.length - 1) || regeneratingId === entry.id}
+                statusText={entry.statusText}
+                onDownloadFile={saveGeneratedFile}
                 actions={
                   <>
                     <button
@@ -554,7 +592,8 @@ export function Ask() {
                         <RefreshCw size={12} />
                       )}
                     </button>
-                    {(["pdf", "docx"] as const).map((fmt) => (
+                    {/* an edit already made its own file (shown above), so exporting the reply is pointless */}
+                    {!entry.result.files?.length && (["pdf", "docx"] as const).map((fmt) => (
                       <button
                         key={fmt}
                         title={`Download as ${fmt.toUpperCase()}`}
@@ -641,7 +680,7 @@ export function Ask() {
                 type="text"
                 placeholder={
                   attachments.length > 0
-                    ? "Ask about your attached files…"
+                    ? "Ask about your attached files, or tell me how to change them…"
                     : "e.g. Summarize the Q1 contracts, or how do these numbers relate?"
                 }
                 value={question}

@@ -67,6 +67,10 @@ _STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_query_history_created_at ON query_history (created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_query_history_conversation_id ON query_history (conversation_id, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_export_history_created_at ON export_history (created_at DESC)",
+    # Edited files remember what they were made from: the file card after a
+    # reload, and "edit the previous result" in the same chat.
+    "ALTER TABLE export_history ADD COLUMN IF NOT EXISTS source_name TEXT",
+    "ALTER TABLE export_history ADD COLUMN IF NOT EXISTS source_file_id BIGINT",
     # Hybrid retrieval (vector + keyword + file metadata). Generated
     # columns keep the tsvectors in sync with no application code.
     "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS heading TEXT NOT NULL DEFAULT ''",

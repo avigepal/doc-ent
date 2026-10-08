@@ -64,7 +64,7 @@ def _correlation_report_to_dict(report) -> dict:
 @celery_app.task(name="app.tasks.correlate.query")
 def query(
     question: str,
-    k: int = 8,
+    k: int = settings.search_top_k,
     folders: list[str] | None = None,
     author: str | None = None,
     title: str | None = None,
@@ -118,7 +118,7 @@ def query(
 @celery_app.task(name="app.tasks.correlate.ask")
 def ask(
     question: str,
-    k: int = 8,
+    k: int = settings.search_top_k,
     folders: list[str] | None = None,
     author: str | None = None,
     title: str | None = None,
@@ -145,7 +145,7 @@ def ask(
 @celery_app.task(name="app.tasks.correlate.correlate")
 def correlate(
     question: str,
-    k: int = 8,
+    k: int = settings.search_top_k,
     folders: list[str] | None = None,
     author: str | None = None,
     title: str | None = None,

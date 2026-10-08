@@ -1,7 +1,9 @@
-import { FileText, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Download, FileText, X } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { buttonSecondary, card, label, muted } from "../ui";
+import type { GeneratedFile } from "../api/client";
+import { useViewer } from "./DocumentViewer";
 import { Markdown } from "./Markdown";
 
 export interface ResultCardData {
@@ -11,6 +13,7 @@ export interface ResultCardData {
   grounded: boolean;
   cross_doc: { answer: string; sources: string[] } | null;
   statistical: { answer: string; correlation_summary: string } | null;
+  files?: GeneratedFile[];
 }
 
 /** Strips everything up to and including "/raw/" so citations show a
@@ -21,27 +24,51 @@ export function shortenSource(path: string): string {
   return idx === -1 ? path : path.slice(idx + marker.length);
 }
 
-function SourceList({ sources }: { sources: string[] }) {
+function SourceList({ sources, onOpen }: { sources: string[]; onOpen?: (source: string) => void }) {
   return (
     <ol className="mt-2 space-y-1.5">
-      {sources.map((source, i) => (
-        <li key={source} className="flex items-baseline gap-2.5">
-          <span className={`font-mono text-[11px] tabular-nums ${muted}`}>[{i + 1}]</span>
-          <span className="min-w-0">
+      {sources.map((source, i) => {
+        const text = (
+          <>
             <span className="block break-words text-[13px] font-medium text-[var(--ink)]">
               {shortenSource(source).split("/").pop()}
             </span>
             <span className={`font-mono block break-all text-[11px] ${muted}`}>{shortenSource(source)}</span>
-          </span>
-        </li>
-      ))}
+          </>
+        );
+        return (
+          <li key={source} className="flex items-baseline gap-2.5">
+            <span className={`font-mono text-[11px] tabular-nums ${muted}`}>[{i + 1}]</span>
+            {onOpen ? (
+              <button
+                type="button"
+                onClick={() => onOpen(source)}
+                title="Open this document"
+                className="min-w-0 cursor-pointer text-left hover:[&_span:first-child]:text-[var(--index)]"
+              >
+                {text}
+              </button>
+            ) : (
+              <span className="min-w-0">{text}</span>
+            )}
+          </li>
+        );
+      })}
     </ol>
   );
 }
 
 /** Rendered into document.body (like the Ask help dialog) so it covers the
  * fixed header and isn't clipped by a card's stacking context. */
-function SourcesModal({ result, onClose }: { result: ResultCardData; onClose: () => void }) {
+function SourcesModal({
+  result,
+  onClose,
+  onOpen,
+}: {
+  result: ResultCardData;
+  onClose: () => void;
+  onOpen?: (source: string) => void;
+}) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -75,19 +102,19 @@ function SourcesModal({ result, onClose }: { result: ResultCardData; onClose: ()
             <X size={16} />
           </button>
         </div>
-        <p className={`mt-1 text-xs ${muted}`}>Documents this answer was based on. [n] matches the citation numbers.</p>
+        <p className={`mt-1 text-xs ${muted}`}>Documents this answer was based on. [n] matches the citation numbers. Click one to read it.</p>
 
         {result.sources.length > 0 && (
           <div className="mt-4">
             <p className={label}>Answer</p>
-            <SourceList sources={result.sources} />
+            <SourceList sources={result.sources} onOpen={onOpen} />
           </div>
         )}
 
         {crossDocSources.length > 0 && (
           <div className="mt-4 border-t border-[var(--line)] pt-4">
             <p className={label}>Cross-document findings</p>
-            <SourceList sources={crossDocSources} />
+            <SourceList sources={crossDocSources} onOpen={onOpen} />
           </div>
         )}
       </div>
@@ -117,14 +144,57 @@ function Thinking({ label: text }: { label: string }) {
   );
 }
 
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** A file the assistant made. It is saved automatically as soon as it is
+ * ready; the button is only there to save it again (or if the browser
+ * blocked the automatic download). */
+function GeneratedFileCard({ file, onDownload }: { file: GeneratedFile; onDownload?: (file: GeneratedFile) => void }) {
+  return (
+    <div className="flex items-center gap-3 rounded border border-[var(--line)] bg-[var(--index-soft)] px-3 py-2.5">
+      <FileText size={18} className="shrink-0 text-[var(--index)]" />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[13px] font-medium" title={file.name}>
+          {file.name}
+        </p>
+        <p className={`text-[11px] ${muted}`}>
+          {formatSize(file.size_bytes)} · saved to your downloads{file.source ? ` · made from ${file.source}` : ""}
+        </p>
+      </div>
+      {onDownload && (
+        <button
+          type="button"
+          onClick={() => onDownload(file)}
+          title="Download again"
+          aria-label={`Download ${file.name} again`}
+          className="inline-flex shrink-0 cursor-pointer items-center rounded border border-[var(--line)] bg-[var(--paper)] p-1.5 text-[var(--ink-soft)] transition-colors hover:border-[var(--index)] hover:text-[var(--index)]"
+        >
+          <Download size={14} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function ResultCard({
   result,
   actions,
   chatOnly = false,
   pending = false,
+  statusText,
+  onDownloadFile,
 }: {
   result: ResultCardData;
   actions?: React.ReactNode;
+  /** What the app is doing right now ("Rewriting part 2 of 5…"); replaces the
+   * generic loader text while pending. */
+  statusText?: string;
+  /** Saves a generated file again. */
+  onDownloadFile?: (file: GeneratedFile) => void;
   /** True while this answer is still being generated: shows a loader instead
    * of an empty box and holds back the action buttons until it's done. */
   pending?: boolean;
@@ -135,6 +205,24 @@ export function ResultCard({
   chatOnly?: boolean;
 }) {
   const [showSources, setShowSources] = useState(false);
+  const viewer = useViewer();
+
+  // Opens a document at the part that matches the question best; the answer's
+  // [n] markers and the Sources list both use it.
+  const openSource = useCallback(
+    (source: string) => {
+      setShowSources(false);
+      viewer?.open({ path: source, q: result.question });
+    },
+    [viewer, result.question],
+  );
+  const openCitation = useCallback(
+    (n: number) => {
+      const source = result.sources[n - 1];
+      if (source) openSource(source);
+    },
+    [openSource, result.sources],
+  );
 
   const sourceCount = new Set([...result.sources, ...(result.cross_doc?.sources ?? [])]).size;
 
@@ -148,20 +236,29 @@ export function ResultCard({
       )}
       {result.answer ? (
         <div className="mt-2">
-          <Markdown>{result.answer}</Markdown>
+          <Markdown onCitation={viewer && result.sources.length > 0 ? openCitation : undefined}>{result.answer}</Markdown>
         </div>
       ) : pending ? (
         <Thinking
           label={
-            chatOnly
+            statusText ||
+            (chatOnly
               ? "Thinking…"
               : result.sources.length === 0
                 ? "Searching your documents…"
-                : "Reading the sources and writing the answer…"
+                : "Reading the sources and writing the answer…")
           }
         />
       ) : (
         <p className={`mt-2 text-[13px] ${muted}`}>No answer was generated. Try regenerating.</p>
+      )}
+
+      {result.files && result.files.length > 0 && (
+        <div className="mt-3 space-y-2">
+          {result.files.map((file) => (
+            <GeneratedFileCard key={file.id} file={file} onDownload={onDownloadFile} />
+          ))}
+        </div>
       )}
 
       {result.cross_doc && (
@@ -200,7 +297,9 @@ export function ResultCard({
         </div>
       )}
 
-      {showSources && <SourcesModal result={result} onClose={() => setShowSources(false)} />}
+      {showSources && (
+        <SourcesModal result={result} onClose={() => setShowSources(false)} onOpen={viewer ? openSource : undefined} />
+      )}
     </div>
   );
 }

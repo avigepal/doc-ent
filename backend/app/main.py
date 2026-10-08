@@ -21,7 +21,7 @@ from app.pipeline_runner import (
 
 class QuestionRequest(BaseModel):
     question: str
-    k: int = 8
+    k: int = settings.search_top_k
     folders: list[str] = []  # top-level folder names under raw/; empty = whole corpus
     author: str | None = None  # case-insensitive substring match, e.g. "files by this author"
     title: str | None = None  # case-insensitive substring match
@@ -38,6 +38,9 @@ class QuestionRequest(BaseModel):
     # belongs to (see dashboard/src/pages/Ask.tsx) -- "" groups it with
     # the other ungrouped legacy rows from before this field existed.
     conversation_id: str = ""
+    # Set when regenerating an earlier reply: edits then continue from what
+    # came before that reply, not from its own result.
+    before_history_id: int | None = None
 
 app = FastAPI(title="Docent API")
 
@@ -206,6 +209,28 @@ def create_folder_endpoint(payload: CreateFolderRequest) -> dict:
     return {"created": folder_name}
 
 
+def _recent_turns(session: Session, conversation_id: str, limit: int = 3) -> list[tuple[str, str]]:
+    """The last few (question, answer) pairs of this chat, oldest first --
+    what the router needs to resolve a follow-up like "tell me more"."""
+    if not conversation_id:
+        return []
+    from app.history.store import list_queries
+
+    records = list_queries(session, limit=limit, conversation_id=conversation_id)
+    return [(r.question, r.answer) for r in reversed(records)]
+
+
+def _attachment_names(session: Session, file_ids: list[int] | None) -> list[str]:
+    if not file_ids:
+        return []
+    from sqlalchemy import select
+
+    from app.models import FileRecord
+
+    paths = session.execute(select(FileRecord.path).where(FileRecord.id.in_(file_ids))).scalars().all()
+    return [Path(p).name for p in paths]
+
+
 def _catalog_answer(session: Session, payload: "QuestionRequest", raw_dir: str) -> dict | None:
     """Questions about the library itself ("list all files", "how many
     documents") are answered from the files table, scoped like a normal
@@ -278,8 +303,11 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
     (history_id) once this endpoint has recorded the completed turn —
     same recording /query does, just after the stream finishes instead
     of before responding."""
-    from app.history.store import record_query
+    from app.editing.service import edit_events, need_file_events
+    from app.history.store import link_exports, record_query
+    from app.routing.router import ROUTE_LABELS, RouteDecision, decide_route
     from app.search.catalog import catalog_events
+    from app.search.keyword import keyword_events, parse_keyword_query
     from app.search.pgvector_retrieval import retrieve_top_k
     from app.search.query import stream_query
     from app.tasks.correlate import _embedder, _raw_dir, _text_llm
@@ -288,29 +316,84 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
         answer_parts: list[str] = []
         meta = {"sources": [], "grounded": False}
         extra = {"cross_doc": None, "statistical": None}
+        export_ids: list[int] = []
+
+        def sse(evt: dict) -> str:
+            return f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
+
         try:
+            question = payload.question
             catalog = _catalog_answer(session, payload, _raw_dir)
             if catalog is not None:
-                chunks = []
                 events = catalog_events(catalog["answer"], catalog["sources"])
             elif payload.chat_only:
-                chunks = []
+                events = stream_query(question, [], {}, _text_llm, chat_only=True)
             else:
-                [query_embedding] = _embedder.embed([payload.question])
-                chunks = retrieve_top_k(
-                    session,
-                    query_embedding,
-                    k=payload.k,
-                    raw_dir=_raw_dir,
-                    folders=payload.folders,
-                    author=payload.author,
-                    title=payload.title,
-                    query_text=payload.question,
-                    file_ids=payload.file_ids,
+                # The model decides what the message needs (search / edit a file / chat) --
+                # but only when the rules can't; see app/routing/router.py.
+                # A word or two ("mac") is a lookup, not a question: list where it appears.
+                keyword_query = parse_keyword_query(question)
+                keyword_stream = (
+                    keyword_events(
+                        session, keyword_query, _raw_dir, payload.folders, payload.author, payload.title, payload.file_ids
+                    )
+                    if keyword_query
+                    else None
+                )
+                if keyword_stream is not None:
+                    decision = RouteDecision("keyword", question, "rules")
+                else:
+                    decision = decide_route(
+                        question,
+                        has_attachments=bool(payload.file_ids),
+                        history=_recent_turns(session, payload.conversation_id),
+                        llm=_text_llm,
+                        attachment_names=_attachment_names(session, payload.file_ids),
+                    )
+                yield sse(
+                    {
+                        "event": "route",
+                        "data": {
+                            "action": decision.action,
+                            "label": ROUTE_LABELS.get(decision.action, ""),
+                            "query": decision.query,
+                            "source": decision.source,
+                        },
+                    }
                 )
 
-            if catalog is None:
-                events = stream_query(payload.question, chunks, {}, _text_llm, chat_only=payload.chat_only)
+                if decision.action == "keyword":
+                    events = keyword_stream
+                elif decision.action == "edit":
+                    events = edit_events(
+                        session,
+                        instruction=question,
+                        file_ids=payload.file_ids or [],
+                        llm=_text_llm,
+                        conversation_id=payload.conversation_id,
+                        before_history_id=payload.before_history_id,
+                    )
+                elif decision.action == "need_file":
+                    events = need_file_events()
+                elif decision.action == "chat":
+                    events = stream_query(question, [], {}, _text_llm, chat_only=True)
+                else:
+                    # search with the standalone version of the question, so a follow-up
+                    # like "more about this" retrieves what it refers to
+                    [query_embedding] = _embedder.embed([decision.query])
+                    chunks = retrieve_top_k(
+                        session,
+                        query_embedding,
+                        k=payload.k,
+                        raw_dir=_raw_dir,
+                        folders=payload.folders,
+                        author=payload.author,
+                        title=payload.title,
+                        query_text=decision.query,
+                        file_ids=payload.file_ids,
+                    )
+                    events = stream_query(decision.query, chunks, {}, _text_llm)
+
             for evt in events:
                 if evt["event"] == "meta":
                     meta = evt["data"]
@@ -318,7 +401,9 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
                     answer_parts.append(evt["data"]["text"])
                 elif evt["event"] == "extra":
                     extra = evt["data"]
-                yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
+                elif evt["event"] == "file":
+                    export_ids.append(evt["data"]["id"])
+                yield sse(evt)
         except Exception as exc:
             yield f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"
             return
@@ -340,6 +425,7 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
             chat_only=payload.chat_only,
             conversation_id=payload.conversation_id,
         )
+        link_exports(session, export_ids, history_id)
         yield f"event: done\ndata: {json.dumps({'history_id': history_id})}\n\n"
 
     return StreamingResponse(event_source(), media_type="text/event-stream")
@@ -550,6 +636,17 @@ _EXPORT_MEDIA_TYPES = {
     "pdf": "application/pdf",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "json": "application/json",
+    # files generated by the edit feature keep their own format
+    "md": "text/markdown",
+    "txt": "text/plain",
+    "csv": "text/csv",
+    "yaml": "application/yaml",
+    "yml": "application/yaml",
+    "toml": "application/toml",
+    "xml": "application/xml",
+    "log": "text/plain",
+    "jsonl": "application/x-ndjson",
+    "ndjson": "application/x-ndjson",
 }
 
 
@@ -608,11 +705,13 @@ def history_queries_endpoint(
     specific thread on reload without an N+1 fetch); omit it for the
     History page's cross-conversation list."""
     from app.history.serialization import query_record_to_detail, query_record_to_summary
-    from app.history.store import list_queries
+    from app.history.store import exports_by_query, list_queries
 
     records = list_queries(session, limit=min(limit, 200), offset=offset, conversation_id=conversation_id)
-    shape = query_record_to_detail if detail else query_record_to_summary
-    return {"queries": [shape(r) for r in records]}
+    if not detail:
+        return {"queries": [query_record_to_summary(r) for r in records]}
+    files = exports_by_query(session, [r.id for r in records])
+    return {"queries": [query_record_to_detail(r, files.get(r.id)) for r in records]}
 
 
 @app.get("/history/conversations", dependencies=[Depends(require_bearer_token)])
@@ -668,12 +767,12 @@ def history_query_detail_endpoint(
     """Full stored snapshot, so the History page can re-render a past
     result without re-running the model."""
     from app.history.serialization import query_record_to_detail
-    from app.history.store import get_query
+    from app.history.store import exports_by_query, get_query
 
     record = get_query(session, history_id)
     if record is None:
         raise HTTPException(status_code=404, detail="no such history entry")
-    return query_record_to_detail(record)
+    return query_record_to_detail(record, exports_by_query(session, [record.id]).get(record.id))
 
 
 @app.delete("/history/queries/{history_id}", dependencies=[Depends(require_bearer_token)])
@@ -723,6 +822,28 @@ def history_export_download_endpoint(
         media_type=_EXPORT_MEDIA_TYPES.get(record.fmt, "application/octet-stream"),
         filename=path.name,
     )
+
+
+@app.get("/files/sections", dependencies=[Depends(require_bearer_token)])
+def file_sections_endpoint(
+    file_id: int | None = None,
+    path: str | None = None,
+    around: int | None = None,
+    span: int = 12,
+    q: str | None = None,
+    phrase: bool = False,
+    session: Session = Depends(get_session),
+) -> dict:
+    """The sections of one document, for the dashboard's viewer: a window of
+    `span` sections on each side of `around` (or of the section that matches
+    `q` best, when no section is given). Search results and answer sources
+    open here. See app/search/viewer.py."""
+    from app.search.viewer import load_sections
+
+    result = load_sections(session, file_id=file_id, path=path, around=around, span=min(max(span, 1), 40), q=q, phrase=phrase)
+    if result is None:
+        raise HTTPException(status_code=404, detail="no such document, or it has no searchable text yet")
+    return result
 
 
 @app.get("/ingestion/progress", dependencies=[Depends(require_bearer_token)])

@@ -122,7 +122,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({
         question,
-        k: options.k ?? 8,
+        k: options.k,
         folders: options.folders ?? [],
         author: options.author || null,
         title: options.title || null,
@@ -150,6 +150,8 @@ export const api = {
       chatOnly?: boolean;
       conversationId?: string;
       fileIds?: number[];
+      // regenerating an earlier reply: edits continue from what came before it
+      beforeHistoryId?: number;
     } = {},
     handlers: {
       onMeta?: (meta: { sources: string[]; grounded: boolean }) => void;
@@ -159,6 +161,10 @@ export const api = {
         statistical: { answer: string; correlation_summary: string } | null;
       }) => void;
       onDone?: (historyId: number) => void;
+      // what the app decided to do with the message, and progress while it works
+      onRoute?: (route: { action: string; label: string }) => void;
+      onStatus?: (text: string) => void;
+      onFile?: (file: GeneratedFile) => void;
     } = {},
   ): Promise<void> => {
     const token = getToken();
@@ -171,13 +177,14 @@ export const api = {
       headers,
       body: JSON.stringify({
         question,
-        k: options.k ?? 8,
+        k: options.k,
         folders: options.folders ?? [],
         author: options.author || null,
         title: options.title || null,
         chat_only: options.chatOnly ?? false,
         conversation_id: options.conversationId ?? "",
         file_ids: options.fileIds?.length ? options.fileIds : null,
+        before_history_id: options.beforeHistoryId ?? null,
       }),
     });
 
@@ -216,6 +223,9 @@ export const api = {
         if (eventName === "meta") handlers.onMeta?.(data);
         else if (eventName === "token") handlers.onToken?.(data.text);
         else if (eventName === "extra") handlers.onExtra?.(data);
+        else if (eventName === "route") handlers.onRoute?.(data);
+        else if (eventName === "status") handlers.onStatus?.(data.text);
+        else if (eventName === "file") handlers.onFile?.(data);
         else if (eventName === "done") handlers.onDone?.(data.history_id);
         else if (eventName === "error") throw new ApiError(500, data.message ?? "stream error");
       }
@@ -349,6 +359,19 @@ export const api = {
       { method: "DELETE" },
     ),
 
+  // A window of one document's sections for the viewer: around a section, or around
+  // the one that matches `q` best. See backend/app/search/viewer.py.
+  getFileSections: (o: { fileId?: number; path?: string; around?: number; span?: number; q?: string; phrase?: boolean }) => {
+    const params = new URLSearchParams();
+    if (o.fileId !== undefined) params.set("file_id", String(o.fileId));
+    if (o.path) params.set("path", o.path);
+    if (o.around !== undefined) params.set("around", String(o.around));
+    if (o.span !== undefined) params.set("span", String(o.span));
+    if (o.q) params.set("q", o.q);
+    if (o.phrase) params.set("phrase", "true");
+    return request<FileSections>(`/files/sections?${params}`);
+  },
+
   getQueryHistory: (id: number) => request<QueryHistoryDetail>(`/history/queries/${id}`),
 
   deleteQueryHistory: (id: number) =>
@@ -387,6 +410,16 @@ export interface FolderStatus {
   has_failures: boolean;
 }
 
+/** A file the assistant created while answering (the edit feature). */
+export interface GeneratedFile {
+  id: number;
+  name: string;
+  fmt: string;
+  size_bytes: number;
+  source: string;
+  download_path: string;
+}
+
 export interface QueryResult {
   question: string;
   answer: string;
@@ -394,6 +427,7 @@ export interface QueryResult {
   grounded: boolean;
   cross_doc: { answer: string; sources: string[] } | null;
   statistical: { answer: string; correlation_summary: string } | null;
+  files?: GeneratedFile[];
   history_id?: number;
 }
 
@@ -459,7 +493,25 @@ export interface ConversationSummary {
   pinned: boolean;
 }
 
+export interface FileSection {
+  index: number;
+  heading: string;
+  text: string;
+}
+
+export interface FileSections {
+  file: { id: number; name: string; path: string };
+  total: number;
+  anchor: number;
+  has_before: boolean;
+  has_after: boolean;
+  terms: string[];
+  phrase: boolean;
+  sections: FileSection[];
+}
+
 export interface QueryHistoryDetail extends QueryHistorySummary {
+  files?: GeneratedFile[];
   answer: string;
   sources: string[];
   cross_doc: { answer: string; sources: string[] } | null;
@@ -545,6 +597,37 @@ export async function downloadHistoryExport(row: ExportHistoryRow): Promise<void
   const link = document.createElement("a");
   link.href = url;
   link.download = `${row.filename}.${row.fmt}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** Saves a file the assistant generated, straight from the server (it is kept
+ * under outputs/, and also listed in History). The request needs the auth
+ * header, so this fetches it and hands the browser a blob to save rather than
+ * linking to the URL. */
+export async function downloadGeneratedFile(file: GeneratedFile): Promise<void> {
+  const token = getToken();
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const response = await fetch(`${BASE_URL}${file.download_path}`, { headers });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      detail = body.detail ?? detail;
+    } catch {
+      // not JSON; keep statusText
+    }
+    throw new ApiError(response.status, detail);
+  }
+
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = file.name;
   document.body.appendChild(link);
   link.click();
   link.remove();

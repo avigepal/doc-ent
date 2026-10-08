@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     # after convert + index (the manual /ingest/summarize still works).
     auto_summarize: bool = True
 
+    # How many passages of the user's documents go to the model with a
+    # question. 8 missed the answer in 1 of 28 test questions; 12 found it in
+    # all 28 (see backend/app/evaluation).
+    search_top_k: int = 12
+
     # Docling (PDF/Office conversion) speed vs. fidelity -- see
     # app/conversion/backends.py. Defaults match Docling's own.
     # docling_ocr: OCR text inside images/scans. Off = faster, but scanned

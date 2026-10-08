@@ -33,13 +33,28 @@ def query_record_to_summary(record: Any) -> dict[str, Any]:
     }
 
 
-def query_record_to_detail(record: Any) -> dict[str, Any]:
+def generated_file_to_dict(record: Any) -> dict[str, Any]:
+    """The shape the dashboard's file card uses (same as the "file" event of
+    a live reply), so a restored chat shows the same card."""
+    name = record.stored_path.replace("\\", "/").rsplit("/", 1)[-1]
+    return {
+        "id": record.id,
+        "name": name,
+        "fmt": record.fmt,
+        "size_bytes": record.size_bytes,
+        "source": record.source_name or "",
+        "download_path": f"/history/exports/{record.id}/download",
+    }
+
+
+def query_record_to_detail(record: Any, files: list[Any] | None = None) -> dict[str, Any]:
     return {
         **query_record_to_summary(record),
         "answer": record.answer,
         "sources": record.sources or [],
         "cross_doc": record.cross_doc,
         "statistical": record.statistical,
+        "files": [generated_file_to_dict(f) for f in files or []],
     }
 
 

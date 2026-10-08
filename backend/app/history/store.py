@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
@@ -57,6 +57,8 @@ def record_export(
     filename: str,
     fmt: str,
     stored_path: Path,
+    source_name: str | None = None,
+    source_file_id: int | None = None,
 ) -> int:
     size_bytes = stored_path.stat().st_size if stored_path.exists() else 0
     record = ExportHistoryRecord(
@@ -65,10 +67,65 @@ def record_export(
         fmt=fmt,
         stored_path=str(stored_path),
         size_bytes=size_bytes,
+        source_name=source_name,
+        source_file_id=source_file_id,
     )
     session.add(record)
     session.commit()
     return record.id
+
+
+def edits_in_conversation(
+    session: Session,
+    conversation_id: str,
+    source_file_id: int,
+    before_history_id: int | None = None,
+) -> list[ExportHistoryRecord]:
+    """The files earlier edits of this uploaded file made in this chat,
+    newest first. `before_history_id` limits it to turns before that one, so
+    regenerating an earlier edit continues from what came before it."""
+    if not conversation_id:
+        return []
+    stmt = (
+        select(ExportHistoryRecord)
+        .join(QueryHistoryRecord, QueryHistoryRecord.id == ExportHistoryRecord.query_history_id)
+        .where(
+            QueryHistoryRecord.conversation_id == conversation_id,
+            ExportHistoryRecord.source_file_id == source_file_id,
+        )
+        .order_by(ExportHistoryRecord.id.desc())
+    )
+    if before_history_id is not None:
+        stmt = stmt.where(QueryHistoryRecord.id < before_history_id)
+    return list(session.execute(stmt).scalars())
+
+
+def exports_by_query(session: Session, query_ids: list[int]) -> dict[int, list[ExportHistoryRecord]]:
+    """The files each of these history rows generated, oldest first."""
+    grouped: dict[int, list[ExportHistoryRecord]] = {}
+    if not query_ids:
+        return grouped
+    rows = session.execute(
+        select(ExportHistoryRecord)
+        .where(ExportHistoryRecord.query_history_id.in_(query_ids))
+        .order_by(ExportHistoryRecord.id)
+    ).scalars()
+    for row in rows:
+        grouped.setdefault(row.query_history_id, []).append(row)
+    return grouped
+
+
+def link_exports(session: Session, export_ids: list[int], query_history_id: int) -> None:
+    """Attach files generated while answering a query to that query's history
+    row (the files are recorded before the row exists)."""
+    if not export_ids:
+        return
+    session.execute(
+        update(ExportHistoryRecord)
+        .where(ExportHistoryRecord.id.in_(export_ids))
+        .values(query_history_id=query_history_id)
+    )
+    session.commit()
 
 
 def list_queries(

@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Header } from "./components/Header";
+import { ViewerProvider } from "./components/DocumentViewer";
 import { Sidebar } from "./components/Sidebar";
 import { useAuth } from "./auth/AuthContext";
 import { Ask } from "./pages/Ask";
@@ -47,6 +48,7 @@ function guarded(element: React.ReactNode) {
 
 function App() {
   return (
+    <ViewerProvider>
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/ask" element={guarded(<Ask />)} />
@@ -57,6 +59,7 @@ function App() {
       <Route path="/" element={<Navigate to="/ask" replace />} />
       <Route path="*" element={<Navigate to="/ask" replace />} />
     </Routes>
+    </ViewerProvider>
   );
 }
 

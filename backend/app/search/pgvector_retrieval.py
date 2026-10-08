@@ -17,6 +17,7 @@ from __future__ import annotations
 from sqlalchemy import and_, func, literal_column, or_, select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models import ChunkRecord, FileRecord
 from app.search.folder_filter import build_folder_like_patterns
 from app.search.hybrid import Candidate, build_or_tsquery, fuse
@@ -70,7 +71,7 @@ def _to_candidates(rows) -> list[Candidate]:
 def retrieve_top_k(
     session: Session,
     query_embedding: list[float],
-    k: int = 8,
+    k: int = settings.search_top_k,
     raw_dir: str | None = None,
     folders: list[str] | None = None,
     author: str | None = None,

@@ -60,9 +60,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Docling model runs on CUDA it JIT-builds a small C launcher and fails with
 # "Failed to find C compiler" on a slim image. Placed after the pip layers
 # so adding it doesn't invalidate the multi-GB torch/requirements layers.
+#
+# fonts-noto-core: glyphs for Devanagari (Hindi), Arabic, Thai, Tamil and
+# other scripts, so a PDF made by the edit feature ("translate to Hindi, as a
+# PDF") doesn't render as empty boxes -- the base fonts only cover Latin.
+# Chinese/Japanese/Korean would need fonts-noto-cjk (~60 MB more).
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev
+    apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev fonts-noto-core
 
 COPY backend/app ./app
 COPY --from=dashboard-build /dashboard/dist /app/dashboard_dist

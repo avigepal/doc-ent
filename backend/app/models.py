@@ -157,4 +157,8 @@ class ExportHistoryRecord(Base):
     fmt: Mapped[str] = mapped_column(String, nullable=False)
     stored_path: Mapped[str] = mapped_column(Text, nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    # Set for files made by the edit feature: what the card says it was made
+    # from, and the uploaded file the edit chain belongs to.
+    source_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_file_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

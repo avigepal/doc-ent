@@ -1,9 +1,11 @@
 import { Check, Copy } from "lucide-react";
-import { isValidElement, useState } from "react";
+import { isValidElement, useMemo, useState } from "react";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
+import { parseViewHref, useViewer } from "./DocumentViewer";
+import type { ViewTarget } from "./DocumentViewer";
 
 // "[1]", "[1][2]" and "[1, 2]" citation markers the model writes.
 const CITATION = /\[(\d+(?:\s*,\s*\d+)*)\]/g;
@@ -11,19 +13,34 @@ const CITATION = /\[(\d+(?:\s*,\s*\d+)*)\]/g;
 /** Turns "[n]" markers inside plain text into small badges so they read as
  * citations instead of stray brackets. They match the numbers in the
  * Sources dialog. */
-function withCitations(children: ReactNode): ReactNode {
+function withCitations(children: ReactNode, onCitation?: (n: number) => void): ReactNode {
   if (typeof children === "string") {
     const parts: ReactNode[] = [];
     let last = 0;
     for (const match of children.matchAll(CITATION)) {
       const start = match.index ?? 0;
       if (start > last) parts.push(children.slice(last, start));
+      const numbers = match[1].split(",").map((n) => Number(n.trim()));
       parts.push(
         <span
           key={start}
           className="font-mono mx-0.5 rounded-sm bg-[var(--locator-soft)] px-1 py-px text-[10px] text-[var(--ink-soft)]"
         >
-          {match[1]}
+          {onCitation
+            ? numbers.map((n, i) => (
+                <span key={i}>
+                  {i > 0 && ", "}
+                  <button
+                    type="button"
+                    onClick={() => onCitation(n)}
+                    title={`Open source ${n}`}
+                    className="cursor-pointer underline-offset-2 hover:text-[var(--index)] hover:underline"
+                  >
+                    {n}
+                  </button>
+                </span>
+              ))
+            : match[1]}
         </span>,
       );
       last = start + match[0].length;
@@ -32,7 +49,7 @@ function withCitations(children: ReactNode): ReactNode {
     if (last < children.length) parts.push(children.slice(last));
     return parts;
   }
-  if (Array.isArray(children)) return children.map((child, i) => <span key={i}>{withCitations(child)}</span>);
+  if (Array.isArray(children)) return children.map((child, i) => <span key={i}>{withCitations(child, onCitation)}</span>);
   return children;
 }
 
@@ -103,12 +120,13 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
-const components = {
-  p: ({ node: _n, children, ...rest }: P<"p">) => <p {...rest}>{withCitations(children)}</p>,
-  li: ({ node: _n, children, ...rest }: P<"li">) => <li {...rest}>{withCitations(children)}</li>,
+function buildComponents(onCitation?: (n: number) => void, openView?: (target: ViewTarget) => void) {
+  return {
+  p: ({ node: _n, children, ...rest }: P<"p">) => <p {...rest}>{withCitations(children, onCitation)}</p>,
+  li: ({ node: _n, children, ...rest }: P<"li">) => <li {...rest}>{withCitations(children, onCitation)}</li>,
   td: ({ node: _n, children, ...rest }: P<"td">) => (
     <td {...rest} className="border border-[var(--line)] px-2.5 py-1.5 align-top">
-      {withCitations(children)}
+      {withCitations(children, onCitation)}
     </td>
   ),
   th: ({ node: _n, children, ...rest }: P<"th">) => (
@@ -116,7 +134,7 @@ const components = {
       {...rest}
       className="border border-[var(--line)] bg-[var(--locator-soft)] px-2.5 py-1.5 text-left font-semibold"
     >
-      {withCitations(children)}
+      {withCitations(children, onCitation)}
     </th>
   ),
   table: ({ node: _n, ...rest }: P<"table">) => (
@@ -131,9 +149,22 @@ const components = {
   h3: ({ node: _n, ...rest }: P<"h3">) => <h4 {...rest} className="font-display mt-1 text-sm font-semibold" />,
   h4: ({ node: _n, ...rest }: P<"h4">) => <h4 {...rest} className="font-display mt-1 text-sm font-semibold" />,
   strong: ({ node: _n, ...rest }: P<"strong">) => <strong {...rest} className="font-semibold" />,
-  a: ({ node: _n, ...rest }: P<"a">) => (
-    <a {...rest} target="_blank" rel="noreferrer" className="text-[var(--index)] underline underline-offset-2" />
-  ),
+  a: ({ node: _n, ...rest }: P<"a">) => {
+    // "open" links in search results: show that part of the file in the viewer
+    const target = parseViewHref(rest.href);
+    if (target && openView) {
+      return (
+        <button
+          type="button"
+          onClick={() => openView(target)}
+          className="cursor-pointer text-[var(--index)] underline underline-offset-2"
+        >
+          {rest.children}
+        </button>
+      );
+    }
+    return <a {...rest} target="_blank" rel="noreferrer" className="text-[var(--index)] underline underline-offset-2" />;
+  },
   blockquote: ({ node: _n, ...rest }: P<"blockquote">) => (
     <blockquote {...rest} className="border-l-2 border-[var(--line)] pl-3 text-[var(--ink-soft)]" />
   ),
@@ -143,11 +174,15 @@ const components = {
   code: ({ node: _n, ...rest }: P<"code">) => (
     <code {...rest} className={rest.className ? rest.className : "font-mono rounded-sm bg-[var(--locator-soft)] px-1 py-px text-[0.85em]"} />
   ),
-};
+  };
+}
 
 /** Renders a model answer as Markdown (headings, lists, tables, code,
  * bold) like a chat assistant, instead of showing the raw symbols. */
-export function Markdown({ children }: { children: string }) {
+export function Markdown({ children, onCitation }: { children: string; onCitation?: (n: number) => void }) {
+  const viewer = useViewer();
+  const open = viewer?.open;
+  const components = useMemo(() => buildComponents(onCitation, open), [onCitation, open]);
   return (
     <div className="space-y-3 text-[14px] leading-relaxed break-words">
       <ReactMarkdown

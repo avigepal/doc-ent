@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS export_history (
     fmt VARCHAR NOT NULL,
     stored_path TEXT NOT NULL,
     size_bytes BIGINT NOT NULL DEFAULT 0,
+    source_name TEXT,
+    source_file_id BIGINT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
