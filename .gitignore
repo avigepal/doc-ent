@@ -11,3 +11,4 @@ data/
 models/
 *.gguf
 .DS_Store
+.claude/
