@@ -1,4 +1,4 @@
-import { Download, FileText, FileEdit, Library, MessageSquare, ScrollText, Search, Sparkles, X } from "lucide-react";
+import { CornerDownRight, Download, FileText, FileEdit, Library, Loader2, MessageSquare, ScrollText, Search, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { buttonSecondary, card, label, muted } from "../ui";
@@ -53,6 +53,7 @@ export function AnswerBadge({
       title = "Written by the AI model from the passages found in your documents.";
       break;
     case "report":
+    case "report_refine":
       text = `Full report${sources}`;
       title = "Written by the AI model after reading every passage of the selected documents.";
       Icon = ScrollText;
@@ -259,8 +260,20 @@ export function ResultCard({
   onDownloadFile,
   route,
   stopped = false,
+  suggestions,
+  suggesting = false,
+  suggestionsDisabled = false,
+  onSuggestion,
 }: {
   result: ResultCardData;
+  /** Related questions to offer under the answer (only shown when `onSuggestion` is given). */
+  suggestions?: string[];
+  /** The related questions are still being thought of. */
+  suggesting?: boolean;
+  /** Greys the questions out while something else is being answered. */
+  suggestionsDisabled?: boolean;
+  /** Asks the clicked question. */
+  onSuggestion?: (question: string) => void;
   /** The user stopped this reply before it finished. */
   stopped?: boolean;
   actions?: React.ReactNode;
@@ -402,6 +415,35 @@ export function ResultCard({
             >
               <FileText size={13} /> Sources ({sourceCount})
             </button>
+          )}
+        </div>
+      )}
+
+      {/* Related questions: shown once the answer is done, and only where a click can ask them. */}
+      {!pending && onSuggestion && (suggesting || (suggestions && suggestions.length > 0)) && (
+        <div className="mt-4 border-t border-[var(--line)] pt-3">
+          <p className={label}>Related questions</p>
+          {suggesting && (!suggestions || suggestions.length === 0) ? (
+            <p role="status" className={`mt-2 flex items-center gap-1.5 text-xs ${muted}`}>
+              <Loader2 size={12} className="animate-spin" aria-hidden="true" /> Thinking of related questions…
+            </p>
+          ) : (
+            <ul className="mt-2 flex flex-wrap gap-2">
+              {suggestions?.map((text) => (
+                <li key={text} className="max-w-full">
+                  <button
+                    type="button"
+                    onClick={() => onSuggestion(text)}
+                    disabled={suggestionsDisabled}
+                    title="Ask this"
+                    className="inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-full border border-[var(--line)] px-3 py-1 text-left text-[13px] text-[var(--ink)] transition-colors hover:border-[var(--index)] hover:bg-[var(--index-soft)] hover:text-[var(--index)] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <CornerDownRight size={12} className="shrink-0 text-[var(--ink-soft)]" aria-hidden="true" />
+                    <span className="min-w-0 break-words">{text}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
       )}

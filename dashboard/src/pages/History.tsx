@@ -28,7 +28,11 @@ function formatWhen(iso: string | null): string {
   return new Date(iso).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
 }
 
-const kindOf = (entry: QueryHistorySummary) => answerKind(entry.route, entry.chat_only, entry.grounded);
+const kindOf = (entry: QueryHistorySummary) => {
+  const kind = answerKind(entry.route, entry.chat_only, entry.grounded);
+  // a change to a report ("make it shorter") is still a full report
+  return kind === "report_refine" ? "report" : kind;
+};
 
 /** What a question was asked against. A direct chat searched nothing, so it must
  * not read "whole corpus"; a chat with files attached searched just those. */

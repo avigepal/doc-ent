@@ -377,6 +377,14 @@ export const api = {
       }),
     }),
 
+  // Related questions to offer under a finished answer. Never throws on the model's side:
+  // the server answers with an empty list when it couldn't think of any.
+  suggestFollowUps: (question: string, answer: string, sources: string[], historyId?: number) =>
+    request<{ suggestions: string[] }>("/query/suggest", {
+      method: "POST",
+      body: JSON.stringify({ question, answer, sources, history_id: historyId ?? null }),
+    }),
+
   // Deletes every file in one folder (the folder itself stays).
   clearFolder: (name: string) =>
     request<{ deleted: number }>(`/folders/${encodeURIComponent(name)}/clear`, { method: "POST" }),
@@ -495,6 +503,8 @@ export interface QueryResult {
   statistical: { answer: string; correlation_summary: string } | null;
   files?: GeneratedFile[];
   history_id?: number;
+  /** Related questions offered under the answer. */
+  suggestions?: string[];
 }
 
 export interface IngestionProgress {
@@ -602,6 +612,7 @@ export interface FileSections {
 
 export interface QueryHistoryDetail extends QueryHistorySummary {
   files?: GeneratedFile[];
+  suggestions?: string[];
   answer: string;
   sources: string[];
   cross_doc: { answer: string; sources: string[] } | null;

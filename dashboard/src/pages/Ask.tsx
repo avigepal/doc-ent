@@ -63,6 +63,10 @@ const STAGE_LABEL: Record<UploadStage, string> = {
   unsupported: "Unsupported",
 };
 
+/** Replies that get related questions underneath: answers and reports from the
+ * documents (not keyword listings, direct chats, file edits or library lookups). */
+const SUGGEST_ROUTES = new Set(["search", "report", "report_refine"]);
+
 /** The question box stops growing at about six lines (px) and scrolls instead. */
 const QUESTION_MAX_HEIGHT = 168;
 
@@ -345,6 +349,7 @@ function historyDetailToEntry(
       statistical: d.statistical,
       files: d.files ?? [],
       history_id: d.id,
+      suggestions: d.suggestions ?? [],
     },
     chatOnly: d.chat_only,
     folders: d.filter_folders,
@@ -385,6 +390,8 @@ export function Ask() {
       route?: string;
       /** The user pressed Stop before the reply finished. */
       stopped?: boolean;
+      /** Related questions for this answer are being thought of. */
+      suggesting?: boolean;
     }[]
   >(
     [],
@@ -616,20 +623,26 @@ export function Ask() {
     signal: AbortSignal,
     mode?: "report",
   ) => {
+    // what the finished reply turned out to be, for the related questions asked for afterwards
+    const got = { answer: "", sources: [] as string[], route: "", historyId: undefined as number | undefined };
     await api.queryStream(
       question,
       { folders, chatOnly, fileIds, conversationId: conversationId ?? undefined, beforeHistoryId, mode },
       {
-        onMeta: (meta) =>
+        onMeta: (meta) => {
+          got.sources = meta.sources;
           setThread((prev) =>
             prev.map((t) =>
               t.id === entryId ? { ...t, result: { ...t.result, sources: meta.sources, grounded: meta.grounded } } : t,
             ),
-          ),
-        onToken: (text) =>
+          );
+        },
+        onToken: (text) => {
+          got.answer += text;
           setThread((prev) =>
             prev.map((t) => (t.id === entryId ? { ...t, result: { ...t.result, answer: t.result.answer + text } } : t)),
-          ),
+          );
+        },
         onExtra: (extra) =>
           setThread((prev) =>
             prev.map((t) =>
@@ -638,15 +651,19 @@ export function Ask() {
                 : t,
             ),
           ),
-        onDone: (historyId) =>
+        onDone: (historyId) => {
+          got.historyId = historyId;
           setThread((prev) =>
             prev.map((t) => (t.id === entryId ? { ...t, result: { ...t.result, history_id: historyId } } : t)),
-          ),
+          );
+        },
         // what the app decided to do, and its progress (shown in the loader)
-        onRoute: (route) =>
+        onRoute: (route) => {
+          got.route = route.action;
           setThread((prev) =>
             prev.map((t) => (t.id === entryId ? { ...t, statusText: route.label || undefined, route: route.action } : t)),
-          ),
+          );
+        },
         onStatus: (text) =>
           setThread((prev) => prev.map((t) => (t.id === entryId ? { ...t, statusText: text } : t))),
         // a file the assistant created: show its card and save it right away
@@ -661,6 +678,40 @@ export function Ask() {
       },
       signal,
     );
+    // The reply is complete (a Stop or an error never gets here). Related questions are
+    // asked for separately, so they never hold up the answer.
+    if (SUGGEST_ROUTES.has(got.route) && got.answer.trim() && got.sources.length > 0) {
+      void offerFollowUps(entryId, question, got.answer, got.sources, got.historyId);
+    }
+  };
+
+  // Five related questions under a finished answer. A failure just means none are shown.
+  const offerFollowUps = async (
+    entryId: string,
+    question: string,
+    answer: string,
+    sources: string[],
+    historyId: number | undefined,
+  ) => {
+    const update = (patch: { suggesting?: boolean; suggestions?: string[] }) =>
+      setThread((prev) =>
+        prev.map((t) =>
+          t.id === entryId
+            ? {
+                ...t,
+                suggesting: patch.suggesting ?? t.suggesting,
+                result: patch.suggestions ? { ...t.result, suggestions: patch.suggestions } : t.result,
+              }
+            : t,
+        ),
+      );
+    update({ suggesting: true });
+    try {
+      const r = await api.suggestFollowUps(question, answer, sources, historyId);
+      update({ suggesting: false, suggestions: r.suggestions });
+    } catch {
+      update({ suggesting: false });
+    }
   };
 
   const handleStop = () => abortRef.current?.abort();
@@ -769,7 +820,8 @@ export function Ask() {
   // model to write up what those documents say about it, in the same scope the
   // lookup ran with. The sentence has more than two words, so it is routed as a
   // question and not read as another keyword lookup.
-  const handleSummarize = (entryId: string) => {
+  // Asks a new question in the same scope (folders or files) as an earlier turn.
+  const askInSameScope = (entryId: string, question: string) => {
     const entry = thread.find((t) => t.id === entryId);
     if (!entry) return;
     const fileIds =
@@ -777,12 +829,13 @@ export function Ask() {
       (entry.chatOnly || entry.folders.length > 0
         ? []
         : attachments.filter((a) => a.stage === "ready").map((a) => a.id));
-    void askNew(
-      `Summarize what the documents say about "${keywordTerm(entry.result.question)}"`,
-      entry.folders,
-      entry.chatOnly,
-      fileIds,
-    );
+    void askNew(question, entry.folders, entry.chatOnly, fileIds);
+  };
+
+  const handleSummarize = (entryId: string) => {
+    const entry = thread.find((t) => t.id === entryId);
+    if (!entry) return;
+    askInSameScope(entryId, `Summarize what the documents say about "${keywordTerm(entry.result.question)}"`);
   };
 
   const handleRegenerate = async (entryId: string) => {
@@ -793,7 +846,7 @@ export function Ask() {
     setThread((prev) =>
       prev.map((t) =>
         t.id === entryId
-          ? { ...t, statusText: undefined, route: undefined, stopped: false, result: { ...t.result, answer: "", sources: [], grounded: false, cross_doc: null, statistical: null, files: [] } }
+          ? { ...t, statusText: undefined, route: undefined, stopped: false, suggesting: false, result: { ...t.result, answer: "", sources: [], grounded: false, cross_doc: null, statistical: null, files: [], suggestions: [] } }
           : t,
       ),
     );
@@ -955,6 +1008,11 @@ export function Ask() {
                 statusText={entry.statusText}
                 route={entry.route}
                 stopped={entry.stopped}
+                // related questions only under the newest answer: older ones are stale noise
+                suggestions={index === thread.length - 1 ? entry.result.suggestions : undefined}
+                suggesting={index === thread.length - 1 && !!entry.suggesting}
+                suggestionsDisabled={busy}
+                onSuggestion={index === thread.length - 1 ? (text) => askInSameScope(entry.id, text) : undefined}
                 onDownloadFile={saveGeneratedFile}
                 actions={
                   <>
