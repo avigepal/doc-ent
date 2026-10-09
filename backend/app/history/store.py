@@ -59,6 +59,12 @@ def set_cross_doc(session: Session, history_id: int, cross_doc: dict) -> None:
     session.commit()
 
 
+def set_suggestions(session: Session, history_id: int, suggestions: list[str]) -> None:
+    """Saves the related questions offered under a finished answer."""
+    session.execute(update(QueryHistoryRecord).where(QueryHistoryRecord.id == history_id).values(suggestions=suggestions))
+    session.commit()
+
+
 def record_export(
     session: Session,
     *,
@@ -145,6 +151,27 @@ def list_queries(
         stmt = stmt.where(QueryHistoryRecord.conversation_id == conversation_id)
     stmt = stmt.limit(limit).offset(offset)
     return list(session.execute(stmt).scalars())
+
+
+def pick_report_context(records: list, before_id: int | None = None) -> tuple[str, str] | None:
+    """(the request the report was written for, the latest version of it) when the
+    newest turn of the chat is a full report or a follow-up to one; None otherwise.
+    `records` are newest first. A regenerate passes the turn it replaces as
+    `before_id`, so only what came before it counts."""
+    if before_id is not None:
+        records = [r for r in records if r.id < before_id]
+    if not records or records[0].route not in ("report", "report_refine"):
+        return None
+    original = next((r for r in records if r.route == "report"), None)
+    if original is None:
+        return None
+    return original.question, records[0].answer
+
+
+def report_context(session: Session, conversation_id: str, before_id: int | None = None) -> tuple[str, str] | None:
+    if not conversation_id:
+        return None
+    return pick_report_context(list_queries(session, limit=30, conversation_id=conversation_id), before_id)
 
 
 def list_conversations(session: Session, limit: int = 50) -> list[dict]:

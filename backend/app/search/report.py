@@ -19,7 +19,9 @@ events so the dashboard can show progress while the documents are read.
 
 from __future__ import annotations
 
+import hashlib
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Protocol
@@ -67,6 +69,18 @@ REPORT_SYSTEM_PROMPT = (
     "other notable details). Use bullets for lists of facts and a table where it compares several items."
 )
 
+REFINE_SYSTEM_PROMPT = (
+    "You revise a report the user already has. Apply the user's instruction to the previous report, "
+    "using the same notes it was written from.\n"
+    "\n"
+    "Rules:\n"
+    "1. Use ONLY the notes. If the instruction asks for something the notes do not contain, say so in one "
+    "sentence instead of inventing it.\n"
+    "2. Keep the [n] citation numbers exactly as the notes number the documents.\n"
+    "3. Keep everything the instruction does not ask to change.\n"
+    "4. Reply with the complete revised report in Markdown, not a description of the changes."
+)
+
 NO_DOCUMENTS_MESSAGE = (
     "There are no readable documents to build a report from. Attach the files to this chat, or choose a "
     "folder under Scope, and wait until they show as ready."
@@ -91,6 +105,8 @@ class ReportDocument:
     path: str
     # (heading, text) in reading order -- the same sections the search runs over
     sections: list[tuple[str, str]]
+    # the files row, so saved notes can be kept against it (None: never saved)
+    file_id: int | None = None
 
     @property
     def name(self) -> str:
@@ -100,6 +116,15 @@ class ReportDocument:
     def chars(self) -> int:
         return sum(len(h) + len(t) for h, t in self.sections)
 
+    @property
+    def content_hash(self) -> str:
+        """Identifies the exact text that notes were taken from: when the file
+        is converted again and its text differs, saved notes no longer match."""
+        digest = hashlib.sha256()
+        for heading, text in self.sections:
+            digest.update(f"{heading}\x00{text}\x00".encode("utf-8", "replace"))
+        return digest.hexdigest()
+
 
 @dataclass(frozen=True)
 class ReportLimits:
@@ -107,6 +132,25 @@ class ReportLimits:
     max_files: int
     max_chars: int  # all documents together
     notes_chars: int  # all notes together, before the report is written
+    parallel: int = 1  # note-taking calls in flight at once (needs llama-server slots)
+
+
+# Bump when the note-taking prompt changes, so notes saved with the old one are not reused.
+NOTES_VERSION = 1
+
+
+def request_key(request: str) -> str:
+    """Saved notes are for one request: the same words (ignoring case and spacing)
+    find them again."""
+    normalized = " ".join(request.lower().split())
+    return hashlib.sha256(f"{NOTES_VERSION}\n{normalized}".encode("utf-8")).hexdigest()
+
+
+class NotesStore(Protocol):
+    def get(self, file_id: int, request_key: str, content_hash: str) -> str | None:
+        """The saved notes ("" = nothing relevant), or None when there are none."""
+
+    def put(self, file_id: int, request_key: str, content_hash: str, notes: str) -> None: ...
 
 
 # ---------- pure helpers ----------
@@ -183,64 +227,154 @@ def _nothing_to_report(message: str) -> Iterator[StreamEvent]:
     yield {"event": "extra", "data": {"cross_doc": None, "statistical": None}}
 
 
+def _gather_notes(
+    request: str,
+    documents: list[ReportDocument],
+    llm: LLMClient,
+    limits: ReportLimits,
+    store: NotesStore | None,
+) -> Iterator[StreamEvent]:
+    """Notes from every document for this request, as (notes by path, names by
+    path, names of documents with nothing relevant); the return value of the
+    generator, so callers use `yield from`. Documents already read for this
+    exact request and text come from the store; the rest are read, up to
+    `limits.parallel` pieces at a time, and saved as each finishes."""
+    key = request_key(request)
+    notes: dict[str, str] = {}  # path -> notes ("" = nothing relevant)
+    saved = 0
+    pieces: list[tuple[int, int, str]] = []  # (document, part, text) still to read
+    parts_needed: dict[int, int] = {}
+
+    for index, doc in enumerate(documents):
+        if store is not None and doc.file_id is not None:
+            cached = store.get(doc.file_id, key, doc.content_hash)
+            if cached is not None:
+                notes[doc.path] = cached
+                saved += 1
+                continue
+        batches = batch_sections(doc.sections, limits.batch_chars)
+        parts_needed[index] = len(batches)
+        pieces.extend((index, part, batch) for part, batch in enumerate(batches))
+
+    if saved:
+        yield _status(f"Using saved notes for {saved} of {len(documents)} documents…")
+
+    if pieces:
+        replies: dict[int, dict[int, str]] = {index: {} for index in parts_needed}
+
+        def read(piece: tuple[int, int, str]) -> tuple[int, int, str]:
+            index, part, batch = piece
+            reply = llm.chat(
+                MAP_SYSTEM_PROMPT,
+                f"Request: {request}\n\nDocument: {documents[index].name}\n\n{batch}",
+                temperature=0.1,
+                max_tokens=NOTES_MAX_TOKENS,
+                extra_body=_NO_THINKING,
+            )
+            return index, part, reply
+
+        executor = ThreadPoolExecutor(max_workers=max(1, min(limits.parallel, len(pieces))))
+        try:
+            futures = [executor.submit(read, piece) for piece in pieces]
+            for done, future in enumerate(as_completed(futures), start=1):
+                index, part, reply = future.result()
+                replies[index][part] = reply
+                doc = documents[index]
+                yield _status(f"Reading your documents… {done} of {len(pieces)} parts done ({doc.name})")
+                if len(replies[index]) == parts_needed[index]:
+                    ordered = [r.strip() for _, r in sorted(replies[index].items()) if not is_nothing(r)]
+                    notes[doc.path] = "\n".join(ordered)
+                    # saved here, in this thread: the database session isn't shared with the readers
+                    if store is not None and doc.file_id is not None:
+                        store.put(doc.file_id, key, doc.content_hash, notes[doc.path])
+        finally:
+            # a stopped report must not keep starting new reads
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    with_notes: dict[str, str] = {}
+    names: dict[str, str] = {}
+    empty: list[str] = []
+    for doc in documents:  # document order, so the [n] numbers are the same every time
+        if notes.get(doc.path):
+            with_notes[doc.path] = notes[doc.path]
+            names[doc.path] = doc.name
+        else:
+            empty.append(doc.name)
+
+    # Too much for one prompt: shorten the longest notes, keeping every fact.
+    if with_notes:
+        per_document = max(limits.notes_chars // len(with_notes), 1)
+        if sum(len(t) for t in with_notes.values()) > limits.notes_chars:
+            for path, text in list(with_notes.items()):
+                if len(text) > per_document:
+                    yield _status(f"Condensing notes from {names[path]}…")
+                    with_notes[path] = llm.chat(
+                        CONDENSE_SYSTEM_PROMPT,
+                        f"Keep it under about {per_document} characters.\n\n{text}",
+                        temperature=0.1,
+                        max_tokens=NOTES_MAX_TOKENS,
+                        extra_body=_NO_THINKING,
+                    ).strip() or text
+    return with_notes, names, empty
+
+
 def report_events(
     request: str,
     documents: list[ReportDocument],
     llm: LLMClient,
     limits: ReportLimits,
+    store: NotesStore | None = None,
 ) -> Iterator[StreamEvent]:
     problem = scope_problem(documents, limits)
     if problem:
         yield from _nothing_to_report(problem)
         return
 
-    notes: dict[str, str] = {}  # path -> notes, for documents with something relevant
-    names: dict[str, str] = {}
-    empty: list[str] = []
-
-    for number, doc in enumerate(documents, start=1):
-        batches = batch_sections(doc.sections, limits.batch_chars)
-        collected: list[str] = []
-        for part, batch in enumerate(batches, start=1):
-            where = f" (part {part} of {len(batches)})" if len(batches) > 1 else ""
-            yield _status(f"Reading document {number} of {len(documents)}: {doc.name}{where}…")
-            reply = llm.chat(
-                MAP_SYSTEM_PROMPT,
-                f"Request: {request}\n\nDocument: {doc.name}\n\n{batch}",
-                temperature=0.1,
-                max_tokens=NOTES_MAX_TOKENS,
-                extra_body=_NO_THINKING,
-            )
-            if not is_nothing(reply):
-                collected.append(reply.strip())
-        if collected:
-            notes[doc.path] = "\n".join(collected)
-            names[doc.path] = doc.name
-        else:
-            empty.append(doc.name)
-
+    notes, names, empty = yield from _gather_notes(request, documents, llm, limits, store)
     if not notes:
         yield from _nothing_to_report(NOTHING_RELEVANT_MESSAGE.format(count=len(documents)))
         return
-
-    # Too much for one prompt: shorten the longest notes, keeping every fact.
-    per_document = max(limits.notes_chars // len(notes), 1)
-    if sum(len(t) for t in notes.values()) > limits.notes_chars:
-        for path, text in list(notes.items()):
-            if len(text) > per_document:
-                yield _status(f"Condensing notes from {names[path]}…")
-                notes[path] = llm.chat(
-                    CONDENSE_SYSTEM_PROMPT,
-                    f"Keep it under about {per_document} characters.\n\n{text}",
-                    temperature=0.1,
-                    max_tokens=NOTES_MAX_TOKENS,
-                    extra_body=_NO_THINKING,
-                ).strip() or text
 
     yield _status("Writing the report…")
     yield {"event": "meta", "data": {"sources": list(notes), "grounded": True}}
     prompt = notes_prompt(request, {names[p]: t for p, t in notes.items()}, empty)
     yield from _stream_answer(llm, REPORT_SYSTEM_PROMPT, prompt)
+    yield {"event": "extra", "data": {"cross_doc": None, "statistical": None}}
+
+
+PREVIOUS_REPORT_CHARS = 12000
+
+
+def refine_events(
+    request: str,
+    instruction: str,
+    previous_report: str,
+    documents: list[ReportDocument],
+    llm: LLMClient,
+    limits: ReportLimits,
+    store: NotesStore | None = None,
+) -> Iterator[StreamEvent]:
+    """A follow-up to a full report ("add a section on education", "make it
+    shorter"): the same notes (saved ones are reused, so no document is read
+    again unless it changed) and the new instruction applied to the report."""
+    problem = scope_problem(documents, limits)
+    if problem:
+        yield from _nothing_to_report(problem)
+        return
+
+    notes, names, empty = yield from _gather_notes(request, documents, llm, limits, store)
+    if not notes:
+        yield from _nothing_to_report(NOTHING_RELEVANT_MESSAGE.format(count=len(documents)))
+        return
+
+    yield _status("Updating the report…")
+    yield {"event": "meta", "data": {"sources": list(notes), "grounded": True}}
+    prompt = (
+        f"Instruction: {instruction}\n\n"
+        f"Previous report:\n{previous_report[:PREVIOUS_REPORT_CHARS]}\n\n"
+        + notes_prompt(request, {names[p]: t for p, t in notes.items()}, empty)
+    )
+    yield from _stream_answer(llm, REFINE_SYSTEM_PROMPT, prompt)
     yield {"event": "extra", "data": {"cross_doc": None, "statistical": None}}
 
 
@@ -270,4 +404,4 @@ def load_report_documents(
     for file_id, heading, text in rows:
         by_file[file_id].append((heading or "", text))
 
-    return [ReportDocument(path, by_file[file_id]) for file_id, path in files if by_file[file_id]]
+    return [ReportDocument(path, by_file[file_id], file_id) for file_id, path in files if by_file[file_id]]

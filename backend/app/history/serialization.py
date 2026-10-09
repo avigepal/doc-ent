@@ -55,6 +55,7 @@ def query_record_to_detail(record: Any, files: list[Any] | None = None) -> dict[
         "sources": record.sources or [],
         "cross_doc": record.cross_doc,
         "statistical": record.statistical,
+        "suggestions": getattr(record, "suggestions", None) or [],
         "files": [generated_file_to_dict(f) for f in files or []],
     }
 

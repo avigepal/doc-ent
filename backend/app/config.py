@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     # note-taking call reads; report_max_files / report_max_chars: the largest
     # selection it accepts (it reads all of it, so it takes minutes on a big
     # one); report_notes_chars: the notes the final report is written from.
+    # report_parallel: how many note-taking calls run at once. It only speeds
+    # things up if llama-server was started with at least that many slots
+    # (`parallel` / `-np`); with one slot the extra calls just queue. Keep it
+    # one below the slot count so a chat can still be answered meanwhile.
+    report_parallel: int = 3
     report_batch_chars: int = 12000
     report_max_files: int = 15
     report_max_chars: int = 300000

@@ -116,6 +116,60 @@ def test_forced_report_with_no_documents_says_so_instead_of_chatting(client, mon
     assert client.llm.calls == []  # the model was not asked to chat
 
 
+class _Store:
+    """Stands in for the saved-notes table."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    saved = {}
+
+    def get(self, file_id, key, content_hash):
+        return self.saved.get((file_id, key, content_hash))
+
+    def put(self, file_id, key, content_hash, notes):
+        self.saved[(file_id, key, content_hash)] = notes
+
+
+def test_a_change_to_the_report_just_written_reuses_its_notes(client, monkeypatch):
+    import app.history.store as store
+    import app.search.report_notes as report_notes
+
+    _Store.saved = {}
+    monkeypatch.setattr(report_notes, "DbNotesStore", _Store)
+    docs = [ReportDocument("/data/raw/people/cv.pdf", [("", "Asha")], 1)]
+    monkeypatch.setattr(report, "load_report_documents", lambda *a, **k: docs)
+
+    # first: the report itself reads the document and saves the notes
+    first = _post(client, question="full report on this person", mode="report", conversation_id="c1")
+    assert dict(first)["route"]["action"] == "report"
+    reads_before = sum(1 for kind, system in client.llm.calls if kind == "chat" and system == report.MAP_SYSTEM_PROMPT)
+    assert reads_before == 1
+
+    # then: "make it shorter" in the same chat is a follow-up to that report
+    monkeypatch.setattr(store, "report_context", lambda session, conversation_id, before_id=None: ("full report on this person", "old report"))
+    second = _post(client, question="make it shorter", conversation_id="c1")
+
+    route = dict(second)["route"]
+    assert route["action"] == "report_refine" and route["label"] == "Updating the report…"
+    reads_after = sum(1 for kind, system in client.llm.calls if kind == "chat" and system == report.MAP_SYSTEM_PROMPT)
+    assert reads_after == reads_before  # nothing was read again
+    assert ("stream", report.REFINE_SYSTEM_PROMPT) in client.llm.calls
+    assert "".join(d["text"] for n, d in second if n == "token") == "The full report."
+    assert client.record_query.call_args.kwargs["route"] == "report_refine"
+
+
+def test_the_toggle_always_wins_over_a_follow_up_phrase(client, monkeypatch):
+    import app.history.store as store
+
+    monkeypatch.setattr(store, "report_context", lambda *a, **k: ("earlier request", "old report"))
+    monkeypatch.setattr(report, "load_report_documents", lambda *a, **k: _docs("cv.pdf"))
+
+    events = _post(client, question="make it shorter", mode="report", conversation_id="c1")
+
+    assert dict(events)["route"]["action"] == "report"
+
+
 def test_mode_is_validated(client):
     response = client.post(
         "/query/stream",

@@ -37,6 +37,7 @@ ROUTE_LABELS = {
     "need_file": "",
     "keyword": "Finding matches…",
     "report": "Reading all your documents…",
+    "report_refine": "Updating the report…",
 }
 
 
@@ -103,6 +104,33 @@ _REPORT_REQUEST = re.compile(
 
 def looks_like_report(message: str) -> bool:
     return bool(_REPORT_REQUEST.search(message))
+
+
+# A follow-up that changes a report just written ("add a section on education",
+# "make it shorter", "translate it to Hindi"). Only applied when the chat's last
+# reply was a full report, and it has to refer to the report or its parts, so a
+# fresh question ("who is the author?") never counts.
+_REFINE_VERB = re.compile(
+    r"^\W*(?:(?:please|kindly|pls|also|now|and)[\s,]+)*(?:(?:can|could|would|will) you[\s,]+(?:please[\s,]+)?)?"
+    r"(?:add|include|put|insert|append|remove|drop|delete|cut|shorten|condense|expand|elaborate|extend|"
+    r"rewrite|rephrase|reword|reformat|restructure|reorgani[sz]e|translate|convert|change|update|redo|"
+    r"improve|simplify|make|turn)\b",
+    re.IGNORECASE,
+)
+_REFINE_TARGET = re.compile(
+    r"\b(?:it|this|that|these|them|report|section|sections|summary|overview|conclusion|heading|headings|"
+    r"paragraph|bullets?|table|tone|shorter|longer|briefer|formal|concise|detail|details|more|less|"
+    r"language|hindi|english|gujarati|spanish|french|german)\b|\bin (?:a )?\w+ (?:tone|style|format)\b",
+    re.IGNORECASE,
+)
+_MAX_REFINEMENT_CHARS = 240
+
+
+def looks_like_report_refinement(message: str) -> bool:
+    text = message.strip()
+    if not text or len(text) > _MAX_REFINEMENT_CHARS or text.endswith("?"):
+        return False
+    return bool(_REFINE_VERB.search(text) and _REFINE_TARGET.search(text))
 
 
 def looks_like_edit(message: str) -> bool:

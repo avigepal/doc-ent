@@ -109,11 +109,14 @@ def test_every_document_is_read_and_the_report_is_written_from_the_notes():
 
     # reads each document, then writes -- and says what it is doing
     statuses = [e["data"]["text"] for e in events if e["event"] == "status"]
-    assert statuses[:3] == [
-        "Reading document 1 of 3: cv.pdf…",
-        "Reading document 2 of 3: letter.pdf…",
-        "Reading document 3 of 3: misc.pdf…",
-    ]
+    reading = [s for s in statuses if s.startswith("Reading your documents…")]
+    assert len(reading) == 3
+    assert reading[-1].startswith("Reading your documents… 3 of 3 parts done")
+    assert {doc for doc in ("cv.pdf", "letter.pdf", "misc.pdf") if any(f"({doc})" in s for s in reading)} == {
+        "cv.pdf",
+        "letter.pdf",
+        "misc.pdf",
+    }
     assert statuses[-1] == "Writing the report…"
 
     # only the documents that had something are sources, in order, numbered for citations
@@ -140,9 +143,9 @@ def test_a_long_document_is_read_in_parts_and_its_notes_are_joined():
     events = list(report_events("report on x", [doc], llm, LIMITS))
 
     statuses = [e["data"]["text"] for e in events if e["event"] == "status"]
-    assert any("(part 1 of" in s for s in statuses)
     map_calls = [c for c in llm.calls if c[0] == MAP_SYSTEM_PROMPT]
     assert len(map_calls) >= 2
+    assert any(f"{len(map_calls)} of {len(map_calls)} parts done" in s for s in statuses)
     assert "- a fact\n- a fact" in llm.calls[-1][1]
 
 

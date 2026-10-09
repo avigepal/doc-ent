@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 from typing import Literal
 
@@ -237,29 +238,58 @@ def _attachment_names(session: Session, file_ids: list[int] | None) -> list[str]
     return [Path(p).name for p in paths]
 
 
-def _report_stream(session: Session, payload: "QuestionRequest"):
-    """Events for a full report: every passage of the files in the request's
-    scope is read, not just the best matches. With nothing to read (a direct
-    chat has no documents) the events say so instead of the model chatting."""
-    from app.search.report import ReportLimits, load_report_documents, report_events
-    from app.tasks.correlate import _raw_dir, _text_llm
+def _report_inputs(session: Session, payload: "QuestionRequest"):
+    """(documents, limits, saved-notes store) for a full report. With nothing to
+    read (a direct chat has no documents) the report events say so instead of
+    the model chatting."""
+    from app.search.report import ReportLimits, load_report_documents
+    from app.search.report_notes import DbNotesStore
+    from app.tasks.correlate import _raw_dir
 
     documents = (
         []
         if payload.chat_only
         else load_report_documents(session, _raw_dir, payload.folders, payload.author, payload.title, payload.file_ids)
     )
-    return report_events(
-        payload.question,
-        documents,
-        _text_llm,
-        ReportLimits(
-            batch_chars=settings.report_batch_chars,
-            max_files=settings.report_max_files,
-            max_chars=settings.report_max_chars,
-            notes_chars=settings.report_notes_chars,
-        ),
+    limits = ReportLimits(
+        batch_chars=settings.report_batch_chars,
+        max_files=settings.report_max_files,
+        max_chars=settings.report_max_chars,
+        notes_chars=settings.report_notes_chars,
+        parallel=settings.report_parallel,
     )
+    return documents, limits, DbNotesStore(session)
+
+
+def _report_stream(session: Session, payload: "QuestionRequest"):
+    """Events for a full report: every passage of the files in the request's
+    scope is read, not just the best matches. Notes saved by an earlier report
+    on the same request are reused."""
+    from app.search.report import report_events
+    from app.tasks.correlate import _text_llm
+
+    documents, limits, store = _report_inputs(session, payload)
+    return report_events(payload.question, documents, _text_llm, limits, store)
+
+
+def _report_followup(session: Session, payload: "QuestionRequest") -> tuple[str, str] | None:
+    """(the original report request, the latest report text) when this message
+    is a change to the report this chat just produced ("make it shorter")."""
+    from app.history.store import report_context
+    from app.routing.router import looks_like_report_refinement
+
+    if payload.chat_only or payload.mode == "report" or not looks_like_report_refinement(payload.question):
+        return None
+    return report_context(session, payload.conversation_id, payload.before_history_id)
+
+
+def _report_refine_stream(session: Session, payload: "QuestionRequest", request: str, previous_report: str):
+    """The same report notes (saved ones, so nothing is read again) with the new instruction applied."""
+    from app.search.report import refine_events
+    from app.tasks.correlate import _text_llm
+
+    documents, limits, store = _report_inputs(session, payload)
+    return refine_events(request, payload.question, previous_report, documents, _text_llm, limits, store)
 
 
 def _catalog_answer(session: Session, payload: "QuestionRequest", raw_dir: str) -> dict | None:
@@ -361,8 +391,24 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
             # the dashboard's "Full report" toggle: whatever the message says, read every
             # document in scope (no catalog shortcut, keyword lookup or routing)
             forced_report = payload.mode == "report"
-            catalog = None if forced_report else _catalog_answer(session, payload, _raw_dir)
-            if forced_report:
+            # a change to the report this chat just made ("make it shorter") reuses its notes
+            followup = None if forced_report else _report_followup(session, payload)
+            catalog = None if (forced_report or followup) else _catalog_answer(session, payload, _raw_dir)
+            if followup:
+                route_action = "report_refine"
+                yield sse(
+                    {
+                        "event": "route",
+                        "data": {
+                            "action": "report_refine",
+                            "label": ROUTE_LABELS["report_refine"],
+                            "query": question,
+                            "source": "rules",
+                        },
+                    }
+                )
+                events = _report_refine_stream(session, payload, *followup)
+            elif forced_report:
                 route_action = "report"
                 yield sse(
                     {
@@ -533,6 +579,35 @@ def query_compare_endpoint(payload: CompareRequest, session: Session = Depends(g
     if payload.history_id is not None:
         set_cross_doc(session, payload.history_id, cross_doc)
     return {"cross_doc": cross_doc}
+
+
+class SuggestRequest(BaseModel):
+    question: str
+    answer: str
+    sources: list[str] = []
+    # the stored reply to attach the questions to, so they survive a reload
+    history_id: int | None = None
+
+
+@app.post("/query/suggest", dependencies=[Depends(require_bearer_token)])
+def query_suggest_endpoint(payload: SuggestRequest, session: Session = Depends(get_session)) -> dict:
+    """Five related questions to offer under a finished answer. Asked for after
+    the answer is shown, so it never delays it; any failure just means no
+    suggestions (an empty list), never an error in the chat."""
+    from app.history.store import set_suggestions
+    from app.search.suggest import suggest_followups
+    from app.tasks.correlate import _text_llm
+
+    if not payload.answer.strip():
+        return {"suggestions": []}
+    try:
+        suggestions = suggest_followups(payload.question, payload.answer, payload.sources, _text_llm)
+    except Exception:
+        logging.getLogger(__name__).warning("could not suggest follow-up questions", exc_info=True)
+        return {"suggestions": []}
+    if suggestions and payload.history_id is not None:
+        set_suggestions(session, payload.history_id, suggestions)
+    return {"suggestions": suggestions}
 
 
 MAX_UPLOAD_FILES = 50

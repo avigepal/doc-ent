@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, Boolean, Computed, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, Computed, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -91,6 +91,25 @@ class ChunkRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class ReportNotesRecord(Base):
+    """What a full report took from one document for one request, kept so a
+    follow-up ("make it shorter", "add a section on X") or a regenerate doesn't
+    read the document again. Valid only for the exact text it was read from
+    (`content_hash`); it goes with the file (ON DELETE CASCADE) and is replaced
+    when the file changes. An empty `notes` means "nothing relevant in it"."""
+
+    __tablename__ = "report_notes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    file_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("files.id", ondelete="CASCADE"), index=True)
+    request_key: Mapped[str] = mapped_column(String, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False)
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    __table_args__ = (UniqueConstraint("file_id", "request_key", name="uq_report_notes_file_request"),)
+
+
 class QueryHistoryRecord(Base):
     """One row per query run through /query or /query/upload. Stores the
     full result, not just the question: re-running a query against a local
@@ -134,6 +153,10 @@ class QueryHistoryRecord(Base):
     # model answer from the documents), "chat", "edit", "catalog"; '' for
     # rows from before this column existed.
     route: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    # Related questions offered under the answer (see app/search/suggest.py);
+    # added after the reply is finished, so NULL until then.
+    suggestions: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
