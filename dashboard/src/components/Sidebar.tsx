@@ -292,7 +292,7 @@ export function Sidebar() {
 
   return (
     <aside
-      className={`shrink-0 overflow-y-auto border-b border-[var(--line)] bg-[var(--paper)] px-4 py-4 lg:fixed lg:bottom-0 lg:left-0 lg:z-10 lg:w-[220px] lg:border-b-0 lg:border-r ${SIDEBAR_TOP_CLASS}`}
+      className={`shrink-0 overflow-y-auto border-b border-[var(--line)] px-4 py-4 lg:fixed lg:bottom-0 lg:left-0 lg:z-10 lg:w-[220px] lg:border-b-0 lg:border-r ${SIDEBAR_TOP_CLASS}`}
     >
       <div>
         <Link

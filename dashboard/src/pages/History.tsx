@@ -1,4 +1,4 @@
-import { Trash2 } from "lucide-react";
+import { Download, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
@@ -9,7 +9,7 @@ import {
   type QueryHistorySummary,
 } from "../api/client";
 import { AnswerBadge, ResultCard, answerKind } from "../components/ResultCard";
-import { buttonSecondary, errorText, input, label, muted, pageTitle, tableCell, tableHeader } from "../ui";
+import { buttonSecondary, errorText, formatButtonFor, input, label, muted, pageTitle, tableCell, tableHeader } from "../ui";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -239,12 +239,22 @@ export function History() {
             {exports.map((row) => (
               <tr key={row.id}>
                 <td className={`font-mono ${tableCell}`}>{row.filename}</td>
-                <td className={`font-mono ${tableCell} text-[11px] uppercase`}>{row.fmt}</td>
+                <td
+                  className={`font-mono ${tableCell} text-[11px] font-medium uppercase ${
+                    row.fmt.toLowerCase() === "pdf"
+                      ? "text-[var(--pdf)]"
+                      : row.fmt.toLowerCase() === "docx"
+                        ? "text-[var(--docx)]"
+                        : ""
+                  }`}
+                >
+                  {row.fmt}
+                </td>
                 <td className={`${tableCell} tabular-nums`}>{formatBytes(row.size_bytes)}</td>
                 <td className={`font-mono ${tableCell} whitespace-nowrap text-[11px]`}>{formatWhen(row.created_at)}</td>
                 <td className={tableCell}>
-                  <button className={buttonSecondary} onClick={() => download(row)}>
-                    Download
+                  <button className={formatButtonFor(row.fmt)} onClick={() => download(row)}>
+                    <Download size={12} aria-hidden="true" /> Download
                   </button>
                 </td>
               </tr>

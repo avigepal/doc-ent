@@ -38,7 +38,7 @@ import {
 } from "../api/client";
 import { ResultCard, shortenSource } from "../components/ResultCard";
 import { formatElapsed, useNow } from "../time";
-import { button, buttonSecondary, errorText, input, muted } from "../ui";
+import { button, buttonSecondary, errorText, formatButton, glass, input, muted } from "../ui";
 
 /** A file attached to the current chat (the upload button). Questions in the
  * chat search only these; a new chat clears them. */
@@ -1070,7 +1070,7 @@ export function Ask() {
                         title={`Download as ${fmt.toUpperCase()}`}
                         onClick={() => handleDownload(entry.id, entry.result, fmt)}
                         disabled={downloading !== null}
-                        className={`${buttonSecondary} inline-flex items-center gap-1.5`}
+                        className={formatButton[fmt]}
                       >
                         {downloading?.id === entry.id && downloading.fmt === fmt ? (
                           <Loader2 size={12} className="animate-spin" />
@@ -1099,8 +1099,8 @@ export function Ask() {
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className={`fixed right-0 bottom-0 left-0 border-t bg-[var(--paper)] py-4 transition-colors lg:left-[220px] ${
-          dragging ? "border-[var(--index)] bg-[var(--index-soft)]" : "border-[var(--line)]"
+        className={`fixed right-0 bottom-0 left-0 border-t py-4 transition-colors lg:left-[220px] ${
+          dragging ? "border-[var(--index)] bg-[var(--index-soft)]" : `border-[var(--line)] ${glass}`
         }`}
       >
         {/* px-6 inside mx-auto max-w-7xl, same reasoning as the header above. */}

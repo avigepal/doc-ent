@@ -1,6 +1,7 @@
 import { LogOut } from "lucide-react";
 import { Link, NavLink } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { glass } from "../ui";
 import { ThemeToggle } from "./ThemeToggle";
 
 const NAV = [
@@ -26,7 +27,7 @@ export function Header() {
 
   return (
     <header
-      className={`fixed inset-x-0 top-0 z-20 flex ${HEADER_HEIGHT_CLASS} items-stretch border-b border-[var(--line)] bg-[var(--paper)]`}
+      className={`fixed inset-x-0 top-0 z-20 flex ${HEADER_HEIGHT_CLASS} items-stretch border-b border-[var(--line)] ${glass}`}
     >
       {/* Same width as the Ask sidebar (220px — keep in step with
           Sidebar.tsx and App.tsx's lg:pl-[220px]) with the same right

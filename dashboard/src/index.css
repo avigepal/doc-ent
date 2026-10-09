@@ -18,6 +18,11 @@
   --locator-soft: #f3e3cc;
   --signal: #3f6b46;
   --danger: #a3372f;
+  /* export formats: PDF red, Word-document blue (each with a soft tint for the fill) */
+  --pdf: #b42318;
+  --pdf-soft: #fbe4e1;
+  --docx: #1d4f91;
+  --docx-soft: #dbe7f7;
   /* syntax highlighting (code blocks in answers) */
   --code-keyword: #8a3b9a;
   --code-string: #3f6b46;
@@ -43,6 +48,10 @@
     --locator-soft: #33260f;
     --signal: #83b48a;
     --danger: #e17c73;
+    --pdf: #f08a80;
+    --pdf-soft: #3a1a18;
+    --docx: #8fb4f0;
+    --docx-soft: #172540;
     --code-keyword: #c792ea;
     --code-string: #83b48a;
     --code-number: #e3a85e;
@@ -64,6 +73,10 @@
   --locator-soft: #33260f;
   --signal: #83b48a;
   --danger: #e17c73;
+  --pdf: #f08a80;
+  --pdf-soft: #3a1a18;
+  --docx: #8fb4f0;
+  --docx-soft: #172540;
   --code-keyword: #c792ea;
   --code-string: #83b48a;
   --code-number: #e3a85e;
@@ -82,6 +95,28 @@ body {
   background: var(--paper);
   color: var(--ink);
   font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+}
+
+/* The page background: a soft wash of the app's own tints (index blue on the
+   left, amber locator on the right) fading out down the page, plus a barely
+   visible paper grain. The colors are the theme's soft tints (--index-soft,
+   --locator-soft), so it follows light and dark by itself. It is static and sits on its own fixed layer behind
+   everything, so it costs nothing and never moves under text; cards, tables and
+   the header are solid and sit on top of it. Pages leave their own background
+   off (no bg-[var(--paper)] on the page wrapper) so this shows through. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.2'/%3E%3C/svg%3E"),
+    radial-gradient(ellipse 62% 58% at 32% 0%, var(--index-soft), transparent 70%),
+    radial-gradient(ellipse 52% 52% at 90% 0%, var(--locator-soft), transparent 70%),
+    radial-gradient(ellipse 70% 38% at 62% 100%, color-mix(in srgb, var(--index-soft) 80%, transparent), transparent 72%);
+  /* the grain (top layer) is blended into the colors under it; the washes are plain */
+  background-blend-mode: soft-light, normal, normal, normal;
 }
 
 .font-display {
