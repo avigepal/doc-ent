@@ -1,4 +1,16 @@
-import { AlertCircle, Check, CircleHelp, Loader2, MessageSquarePlus, Pin, PinOff, Plus, Trash2, X } from "lucide-react";
+import {
+  AlertCircle,
+  Check,
+  CircleHelp,
+  Loader2,
+  MessageSquare,
+  MessageSquarePlus,
+  Pin,
+  PinOff,
+  Plus,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -48,15 +60,16 @@ function HelpModal({ onClose }: { onClose: () => void }) {
             <X size={16} />
           </button>
         </div>
-        <ul className="mt-3 space-y-2.5 text-[13px] leading-relaxed text-[var(--ink-soft)]">
+        <ul className="mt-3 space-y-2.5 text-[14px] leading-relaxed text-[var(--ink-soft)]">
           <li>
             <span className="font-medium text-[var(--ink)]">Ask about your documents.</span> Pick{" "}
             <span className="font-medium text-[var(--ink)]">All</span> or one or more folders under Scope. You get
             grounded answers with citations, plus cross-document and statistical findings when they apply.
           </li>
           <li>
-            <span className="font-medium text-[var(--ink)]">Just chat.</span> Leave Scope empty to talk to the model
-            directly, with no documents involved.
+            <span className="font-medium text-[var(--ink)]">Just chat.</span>{" "}
+            <span className="font-medium text-[var(--ink)]">Chat</span> is selected by default: you talk to the model
+            directly, with no documents involved. Pick All or a folder to search your documents instead.
           </li>
           <li>
             <span className="font-medium text-[var(--ink)]">Add files.</span> Use the upload button next to the
@@ -143,7 +156,7 @@ function NewFolderModal({ onClose, onCreate }: { onClose: () => void; onCreate: 
           onChange={(e) => setName(e.target.value)}
           placeholder="e.g. contracts"
           disabled={creating}
-          className="mt-1.5 w-full rounded border border-[var(--line)] bg-[var(--paper)] px-2.5 py-1.5 text-[13px] text-[var(--ink)] placeholder:text-[var(--ink-soft)] focus:border-[var(--index)] focus:outline-none disabled:opacity-60"
+          className="mt-1.5 w-full rounded border border-[var(--line)] bg-[var(--paper)] px-2.5 py-1.5 text-[14px] text-[var(--ink)] placeholder:text-[var(--ink-soft)] focus:border-[var(--index)] focus:outline-none disabled:opacity-60"
         />
         {error && <p className={`mt-2 ${errorText}`}>{error}</p>}
         <div className="mt-5 flex justify-end gap-2">
@@ -249,6 +262,17 @@ export function Sidebar() {
     setSearchParams(next, { replace: true });
   };
 
+  // Chat = no documents in scope, which is also what an empty Scope means; picking
+  // All or a folder leaves it, and un-picking the last one comes back to it.
+  const directChat = !scopeAll && selectedFolders.length === 0;
+  const chatDirectly = () => {
+    if (directChat) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete("all");
+    next.delete("folders");
+    setSearchParams(next, { replace: true });
+  };
+
   const toggleFolder = (name: string) => {
     const next = new URLSearchParams(searchParams);
     next.delete("all");
@@ -273,7 +297,7 @@ export function Sidebar() {
       <div>
         <Link
           to="/ask"
-          className="flex items-center gap-1.5 rounded px-3 py-1.5 text-[13px] text-[var(--ink-soft)] transition-colors hover:bg-[var(--index-soft)] hover:text-[var(--ink)]"
+          className="flex items-center gap-1.5 rounded px-3 py-1.5 text-[14px] text-[var(--ink-soft)] transition-colors hover:bg-[var(--index-soft)] hover:text-[var(--ink)]"
         >
           <MessageSquarePlus size={14} /> New chat
         </Link>
@@ -347,6 +371,20 @@ export function Sidebar() {
           </button>
         </div>
         <div className="mt-2 flex flex-wrap gap-1.5">
+          {/* Chat is the default: nothing selected under Scope means talking to the model directly. */}
+          <button
+            type="button"
+            onClick={chatDirectly}
+            aria-pressed={directChat}
+            title="Talk to the model directly — your documents are not searched"
+            className={`inline-flex cursor-pointer items-center gap-1 rounded border px-2 py-0.5 text-xs transition-colors ${
+              directChat
+                ? "border-[var(--index)] bg-[var(--index-soft)] text-[var(--index)]"
+                : "border-[var(--line)] text-[var(--ink-soft)] hover:text-[var(--ink)]"
+            }`}
+          >
+            <MessageSquare size={11} aria-hidden="true" /> Chat
+          </button>
           <button
             type="button"
             onClick={toggleAll}

@@ -1,5 +1,5 @@
-import { Download, FileText, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { Download, FileText, FileEdit, Library, MessageSquare, ScrollText, Search, Sparkles, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { buttonSecondary, card, label, muted } from "../ui";
 import type { GeneratedFile } from "../api/client";
@@ -16,6 +16,76 @@ export interface ResultCardData {
   files?: GeneratedFile[];
 }
 
+/** Small badge saying how a reply was made, so a keyword lookup (matched in the
+ * index, no model involved) is never mistaken for a generated answer. `route`
+ * is what the backend decided: "keyword", "search", "chat", "edit", "catalog";
+ * empty for older history rows, where it is inferred from the result. */
+export function answerKind(route: string | undefined, chatOnly: boolean, grounded: boolean): string {
+  return route || (chatOnly ? "chat" : grounded ? "search" : "");
+}
+
+export function AnswerBadge({
+  route,
+  chatOnly,
+  grounded,
+  sourceCount,
+}: {
+  route?: string;
+  chatOnly: boolean;
+  grounded: boolean;
+  sourceCount: number;
+}) {
+  const kind = answerKind(route, chatOnly, grounded);
+  const sources = sourceCount > 0 ? ` · ${sourceCount} ${sourceCount === 1 ? "source" : "sources"}` : "";
+  let text: string;
+  let title: string;
+  let Icon = Sparkles;
+  let tone = "border-[var(--index)] bg-[var(--index-soft)] text-[var(--index)]";
+  switch (kind) {
+    case "keyword":
+      text = `Keyword matches${sourceCount > 0 ? ` · ${sourceCount} ${sourceCount === 1 ? "file" : "files"}` : ""}`;
+      title = "Exact matches found in your documents' index. No AI model was used.";
+      Icon = Search;
+      tone = "border-[var(--locator)] bg-[var(--locator-soft)] text-[var(--locator)]";
+      break;
+    case "search":
+      text = `AI answer${sources}`;
+      title = "Written by the AI model from the passages found in your documents.";
+      break;
+    case "report":
+      text = `Full report${sources}`;
+      title = "Written by the AI model after reading every passage of the selected documents.";
+      Icon = ScrollText;
+      break;
+    case "chat":
+      text = "AI chat · no documents searched";
+      title = "Answered by the AI model on its own; your documents were not searched.";
+      Icon = MessageSquare;
+      break;
+    case "edit":
+      text = "File edit";
+      title = "The AI model edited an attached file.";
+      Icon = FileEdit;
+      break;
+    case "catalog":
+      text = "From your library";
+      title = "Counted and listed from your document library. No AI model was used.";
+      Icon = Library;
+      tone = "border-[var(--line)] text-[var(--ink-soft)]";
+      break;
+    default:
+      return null;
+  }
+  return (
+    <span
+      title={title}
+      className={`font-mono inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wider ${tone}`}
+    >
+      <Icon size={11} className="shrink-0" /> {text}
+    </span>
+  );
+}
+
 /** Strips everything up to and including "/raw/" so citations show a
  * readable "contracts/q2_update.txt" instead of the full container path. */
 export function shortenSource(path: string): string {
@@ -30,7 +100,7 @@ function SourceList({ sources, onOpen }: { sources: string[]; onOpen?: (source: 
       {sources.map((source, i) => {
         const text = (
           <>
-            <span className="block break-words text-[13px] font-medium text-[var(--ink)]">
+            <span className="block break-words text-[14px] font-medium text-[var(--ink)]">
               {shortenSource(source).split("/").pop()}
             </span>
             <span className={`font-mono block break-all text-[11px] ${muted}`}>{shortenSource(source)}</span>
@@ -129,7 +199,7 @@ function SourcesModal({
  * first word). */
 function Thinking({ label: text }: { label: string }) {
   return (
-    <div role="status" aria-live="polite" className={`mt-3 flex items-center gap-2.5 text-[13px] ${muted}`}>
+    <div role="status" aria-live="polite" className={`mt-3 flex items-center gap-2.5 text-[14px] ${muted}`}>
       <span className="flex items-center gap-1" aria-hidden="true">
         {[0, 1, 2].map((i) => (
           <span
@@ -158,7 +228,7 @@ function GeneratedFileCard({ file, onDownload }: { file: GeneratedFile; onDownlo
     <div className="flex items-center gap-3 rounded border border-[var(--line)] bg-[var(--index-soft)] px-3 py-2.5">
       <FileText size={18} className="shrink-0 text-[var(--index)]" />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[13px] font-medium" title={file.name}>
+        <p className="truncate text-[14px] font-medium" title={file.name}>
           {file.name}
         </p>
         <p className={`text-[11px] ${muted}`}>
@@ -187,9 +257,15 @@ export function ResultCard({
   pending = false,
   statusText,
   onDownloadFile,
+  route,
+  stopped = false,
 }: {
   result: ResultCardData;
+  /** The user stopped this reply before it finished. */
+  stopped?: boolean;
   actions?: React.ReactNode;
+  /** How the backend produced this reply (see AnswerBadge). */
+  route?: string;
   /** What the app is doing right now ("Rewriting part 2 of 5…"); replaces the
    * generic loader text while pending. */
   statusText?: string;
@@ -224,11 +300,32 @@ export function ResultCard({
     [openSource, result.sources],
   );
 
+  // hovering a [n] badge previews the cited file; the cross-document findings number their own sources
+  const crossSources = result.cross_doc?.sources;
+  const citationPreview = useMemo(
+    () => ({ sourceFor: (n: number) => result.sources[n - 1], question: result.question }),
+    [result.sources, result.question],
+  );
+  const crossPreview = useMemo(
+    () => ({ sourceFor: (n: number) => crossSources?.[n - 1], question: result.question }),
+    [crossSources, result.question],
+  );
+  const openCrossCitation = useCallback(
+    (n: number) => {
+      const source = crossSources?.[n - 1];
+      if (source) openSource(source);
+    },
+    [openSource, crossSources],
+  );
+
   const sourceCount = new Set([...result.sources, ...(result.cross_doc?.sources ?? [])]).size;
 
   return (
     <div className={card}>
-      <p className={label}>Answer</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className={label}>{route === "keyword" ? "Matches" : "Answer"}</p>
+        <AnswerBadge route={route} chatOnly={chatOnly} grounded={result.grounded} sourceCount={sourceCount} />
+      </div>
       {!chatOnly && !result.grounded && !pending && (
         <p className={`font-mono mt-1 text-[11px] ${muted}`}>
           No matching document was found for this question.
@@ -236,7 +333,12 @@ export function ResultCard({
       )}
       {result.answer ? (
         <div className="mt-2">
-          <Markdown onCitation={viewer && result.sources.length > 0 ? openCitation : undefined}>{result.answer}</Markdown>
+          <Markdown
+            onCitation={viewer && result.sources.length > 0 ? openCitation : undefined}
+            preview={result.sources.length > 0 ? citationPreview : undefined}
+          >
+            {result.answer}
+          </Markdown>
         </div>
       ) : pending ? (
         <Thinking
@@ -250,7 +352,12 @@ export function ResultCard({
           }
         />
       ) : (
-        <p className={`mt-2 text-[13px] ${muted}`}>No answer was generated. Try regenerating.</p>
+        <p className={`mt-2 text-[14px] ${muted}`}>
+          {stopped ? "Stopped before an answer was written." : "No answer was generated. Try regenerating."}
+        </p>
+      )}
+      {stopped && result.answer && (
+        <p className={`font-mono mt-2 text-[11px] ${muted}`}>Stopped — this reply is incomplete and isn’t saved to History.</p>
       )}
 
       {result.files && result.files.length > 0 && (
@@ -265,7 +372,9 @@ export function ResultCard({
         <div className="mt-5 border-t border-[var(--line)] pt-4">
           <p className={label}>Cross-document findings</p>
           <div className="mt-2">
-            <Markdown>{result.cross_doc.answer}</Markdown>
+            <Markdown onCitation={viewer ? openCrossCitation : undefined} preview={crossPreview}>
+              {result.cross_doc.answer}
+            </Markdown>
           </div>
         </div>
       )}

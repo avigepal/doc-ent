@@ -28,7 +28,7 @@ function Layout({ children }: { children: React.ReactNode }) {
   const onAsk = useLocation().pathname === "/ask";
 
   return (
-    <div className="min-h-screen bg-[var(--paper)] pt-12 text-[13px] text-[var(--ink)]">
+    <div className="min-h-screen bg-[var(--paper)] pt-12 text-[14px] text-[var(--ink)]">
       <Header />
       {onAsk && <Sidebar />}
       <main className={onAsk ? "lg:pl-[220px]" : undefined}>

@@ -45,14 +45,14 @@ const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"
 
 /** Matches the words the search matched, including their other endings
  * (compare / comparing), as one hit for a phrase. */
-function highlightRegex(terms: string[], phrase: boolean): RegExp | null {
+export function highlightRegex(terms: string[], phrase: boolean): RegExp | null {
   if (terms.length === 0) return null;
   const word = (w: string) => `(?<![\\p{L}\\p{N}_])${escapeRegex(w.length < 5 ? w : w.slice(0, -1))}[\\p{L}\\p{N}_]*`;
   const source = phrase ? terms.map(word).join("[^\\p{L}\\p{N}_]+") : terms.map(word).join("|");
   return new RegExp(source, "giu");
 }
 
-function Highlighted({ text, pattern }: { text: string; pattern: RegExp | null }) {
+export function Highlighted({ text, pattern }: { text: string; pattern: RegExp | null }) {
   if (!pattern) return <>{text}</>;
   const parts: ReactNode[] = [];
   let last = 0;
@@ -215,7 +215,7 @@ function Viewer({ target, onClose }: { target: ViewTarget; onClose: () => void }
         <div ref={scroller} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
           {error && <p className="font-mono text-xs text-[var(--danger)]">{error}</p>}
           {!data && !error && (
-            <p className={`flex items-center gap-2 text-[13px] ${muted}`}>
+            <p className={`flex items-center gap-2 text-[14px] ${muted}`}>
               <Loader2 size={14} className="animate-spin" /> Opening the document…
             </p>
           )}
@@ -233,11 +233,11 @@ function Viewer({ target, onClose }: { target: ViewTarget; onClose: () => void }
                     }`}
                   >
                     {section.heading && (
-                      <p className="font-display mb-1 text-[13px] font-semibold">
+                      <p className="font-display mb-1 text-[14px] font-semibold">
                         <Highlighted text={section.heading} pattern={pattern} />
                       </p>
                     )}
-                    <p className="text-[13px] leading-relaxed break-words whitespace-pre-wrap">
+                    <p className="text-[14px] leading-relaxed break-words whitespace-pre-wrap">
                       <Highlighted text={section.text} pattern={pattern} />
                     </p>
                   </section>

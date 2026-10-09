@@ -29,6 +29,11 @@ export function clearToken(): void {
   }
 }
 
+/** True for the error a cancelled fetch (AbortController) rejects with. */
+export function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "AbortError";
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -152,6 +157,8 @@ export const api = {
       fileIds?: number[];
       // regenerating an earlier reply: edits continue from what came before it
       beforeHistoryId?: number;
+      // "report": read every document in scope and write a full report, whatever the message says
+      mode?: "report";
     } = {},
     handlers: {
       onMeta?: (meta: { sources: string[]; grounded: boolean }) => void;
@@ -166,6 +173,8 @@ export const api = {
       onStatus?: (text: string) => void;
       onFile?: (file: GeneratedFile) => void;
     } = {},
+    // aborting stops reading, and the server stops generating when the connection closes
+    signal?: AbortSignal,
   ): Promise<void> => {
     const token = getToken();
     const headers = new Headers();
@@ -175,6 +184,7 @@ export const api = {
     const response = await fetch(`${BASE_URL}/query/stream`, {
       method: "POST",
       headers,
+      signal,
       body: JSON.stringify({
         question,
         k: options.k,
@@ -185,6 +195,7 @@ export const api = {
         conversation_id: options.conversationId ?? "",
         file_ids: options.fileIds?.length ? options.fileIds : null,
         before_history_id: options.beforeHistoryId ?? null,
+        mode: options.mode ?? null,
       }),
     });
 
@@ -319,8 +330,63 @@ export const api = {
 
   stats: () => request<OverviewStats>("/stats"),
 
-  listDocuments: (opts: { folder?: string; status?: string; q?: string } = {}) => {
+  // Drop zone on the Documents page: adds files to a corpus folder (created if
+  // new). Multipart, so no JSON Content-Type — the browser sets the boundary.
+  uploadDocuments: async (
+    folder: string,
+    files: File[],
+  ): Promise<{ folder: string; uploaded: string[]; file_ids: number[] }> => {
+    const token = getToken();
+    const form = new FormData();
+    form.append("folder", folder);
+    for (const f of files) form.append("files", f);
+
+    const headers = new Headers();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+
+    const response = await fetch(`${BASE_URL}/documents/upload`, { method: "POST", headers, body: form });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        const body = await response.json();
+        detail = body.detail ?? detail;
+      } catch {
+        // not JSON; keep statusText
+      }
+      throw new ApiError(response.status, detail);
+    }
+    return response.json();
+  },
+
+  deleteDocuments: (ids: number[]) =>
+    request<{ deleted: number }>("/documents/delete", { method: "POST", body: JSON.stringify({ ids }) }),
+
+  // "Compare across documents": runs the cross-document analysis for a finished answer.
+  // cross_doc is null when fewer than two documents match well enough to compare.
+  compareAcrossDocuments: (
+    question: string,
+    options: { folders?: string[]; fileIds?: number[]; historyId?: number } = {},
+  ) =>
+    request<{ cross_doc: { answer: string; sources: string[] } | null }>("/query/compare", {
+      method: "POST",
+      body: JSON.stringify({
+        question,
+        folders: options.folders ?? [],
+        file_ids: options.fileIds?.length ? options.fileIds : null,
+        history_id: options.historyId ?? null,
+      }),
+    }),
+
+  // Deletes every file in one folder (the folder itself stays).
+  clearFolder: (name: string) =>
+    request<{ deleted: number }>(`/folders/${encodeURIComponent(name)}/clear`, { method: "POST" }),
+
+  reprocessDocuments: (ids: number[]) =>
+    request<{ reprocessed: number }>("/documents/reprocess", { method: "POST", body: JSON.stringify({ ids }) }),
+
+  listDocuments: (opts: { folder?: string; status?: string; q?: string; limit?: number } = {}) => {
     const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
     if (opts.folder) params.set("folder", opts.folder);
     if (opts.status) params.set("status", opts.status);
     if (opts.q) params.set("q", opts.q);
@@ -438,6 +504,28 @@ export interface IngestionProgress {
   active: { file: string; folder: string; stage: string; size_bytes: number; elapsed_seconds: number }[];
   failures: { file: string; folder: string; stage: string; error: string | null; retries: number; at: string | null }[];
   recent: { file: string; folder: string; stage: string; finished_at: string | null }[];
+  /** Files still moving through the pipeline, one by one, plus per-stage counts. */
+  pipeline?: {
+    queue: { queued: number; converting: number; indexing: number };
+    files: PipelineFile[];
+    /** All unfinished files; `files` stops at the first 100. */
+    files_total: number;
+    /** Files whose indexing finished in the last couple of minutes (drives the "ready" toast). */
+    recently_ready: { id: number; file: string; folder: string; finished_at: string | null }[];
+  };
+}
+
+export type PipelineStage = "queued" | "converting" | "indexing";
+
+export interface PipelineFile {
+  id: number;
+  file: string;
+  folder: string;
+  stage: PipelineStage;
+  size_bytes: number;
+  /** When the file entered its current stage. */
+  since: string | null;
+  elapsed_seconds: number;
 }
 
 export interface OverviewStats {
@@ -482,6 +570,8 @@ export interface QueryHistorySummary {
   attached_filenames: string[];
   chat_only: boolean;
   conversation_id: string;
+  /** How the reply was made: "keyword", "search", "chat", "edit", "catalog"; "" for older rows. */
+  route?: string;
   created_at: string | null;
 }
 

@@ -1,9 +1,69 @@
-import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
-import { useEffect, useState } from "react";
-import { api, type IngestionProgress } from "../api/client";
+import { AlertCircle, Check, CheckCircle2, Loader2, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { api, type IngestionProgress, type PipelineFile, type PipelineStage } from "../api/client";
+import { formatElapsed, useNow } from "../time";
 import { card, errorText, label, muted, pageTitle, tile } from "../ui";
 
 const POLL_MS = 3000;
+const TOAST_MS = 7000;
+
+const STAGES: { key: PipelineStage | "ready"; label: string }[] = [
+  { key: "queued", label: "Queued" },
+  { key: "converting", label: "Converting" },
+  { key: "indexing", label: "Indexing" },
+  { key: "ready", label: "Ready" },
+];
+
+/** queued -> converting -> indexing -> ready, with the file's current stage lit
+ * and the earlier ones ticked. A file in this list is never "ready" yet. */
+function StageTrail({ stage }: { stage: PipelineStage }) {
+  const current = STAGES.findIndex((s) => s.key === stage);
+  return (
+    <ol className="flex shrink-0 items-center gap-1 text-[11px]" aria-label={`Stage: ${stage}`}>
+      {STAGES.map((s, i) => {
+        const done = i < current;
+        const active = i === current;
+        return (
+          <li key={s.key} className="flex items-center gap-1">
+            {i > 0 && <span className={`h-px w-3 ${done || active ? "bg-[var(--index)]" : "bg-[var(--line)]"}`} aria-hidden="true" />}
+            <span
+              className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 ${
+                active
+                  ? "border-[var(--index)] bg-[var(--index-soft)] font-medium text-[var(--index)]"
+                  : done
+                    ? "border-[var(--line)] text-[var(--ink)]"
+                    : "border-[var(--line)] text-[var(--ink-soft)] opacity-60"
+              }`}
+            >
+              {done && <Check size={10} aria-hidden="true" />}
+              {active && stage !== "queued" && <Loader2 size={10} className="animate-spin" aria-hidden="true" />}
+              {s.label}
+            </span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function PipelineRow({ file, now, first }: { file: PipelineFile; now: number; first: boolean }) {
+  // elapsed is measured from when the file entered this stage, ticking between polls
+  const elapsedMs = file.since ? now - new Date(file.since).getTime() : file.elapsed_seconds * 1000;
+  return (
+    <div className={`flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-2.5 ${first ? "" : "border-t border-[var(--line)]"}`}>
+      <span className="min-w-0 flex-1 basis-48 truncate" title={file.file}>
+        {file.file}
+      </span>
+      <span className={`shrink-0 text-xs ${muted}`}>{file.folder}</span>
+      <StageTrail stage={file.stage} />
+      <span className={`w-14 shrink-0 text-right text-xs tabular-nums ${muted}`} title="Time in this stage">
+        {formatElapsed(elapsedMs)}
+      </span>
+    </div>
+  );
+}
+
+type Toast = { id: number; text: string };
 
 function formatAgo(iso: string | null): string {
   if (!iso) return "";
@@ -30,6 +90,30 @@ function ProgressBar({ total, summarized, converted, failed }: { total: number; 
 export function Progress() {
   const [data, setData] = useState<IngestionProgress | null>(null);
   const [failedToLoad, setFailedToLoad] = useState(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  // Files already announced. The first poll only fills it, so opening the page
+  // doesn't toast everything that finished a moment ago.
+  const announced = useRef<Set<number> | null>(null);
+
+  const dismissToast = (id: number) => setToasts((prev) => prev.filter((t) => t.id !== id));
+
+  const announceReady = (r: IngestionProgress) => {
+    const ready = r.pipeline?.recently_ready ?? [];
+    if (announced.current === null) {
+      announced.current = new Set(ready.map((f) => f.id));
+      return;
+    }
+    const seen = announced.current;
+    const fresh = ready.filter((f) => !seen.has(f.id));
+    if (fresh.length === 0) return;
+    fresh.forEach((f) => seen.add(f.id));
+    const added = fresh.map((f) => ({ id: f.id, text: `${f.file} is ready` }));
+    setToasts((prev) => [...prev, ...added].slice(-4));
+    added.forEach((t) => setTimeout(() => dismissToast(t.id), TOAST_MS));
+  };
+
+  const pipeline = data?.pipeline;
+  const now = useNow((pipeline?.files.length ?? 0) > 0);
 
   useEffect(() => {
     let cancelled = false;
@@ -39,6 +123,7 @@ export function Progress() {
           if (cancelled) return;
           setData(r);
           setFailedToLoad(false);
+          announceReady(r);
         },
         // keep the last good snapshot on a transient failure instead of blanking the page
         () => {
@@ -128,6 +213,48 @@ export function Progress() {
         ))}
       </div>
 
+      {pipeline && (
+        <>
+          <div className="mt-6 flex items-baseline justify-between">
+            <p className={label}>In the pipeline</p>
+            <p className={`text-xs ${muted}`}>
+              {pipeline.files_total === 0
+                ? "Nothing waiting"
+                : `${pipeline.files_total} ${pipeline.files_total === 1 ? "file" : "files"} unfinished`}
+            </p>
+          </div>
+
+          <div className="mt-2 grid grid-cols-3 gap-3">
+            {(
+              [
+                { name: "Queued", hint: "waiting for a worker", value: pipeline.queue.queued },
+                { name: "Converting", hint: "being read", value: pipeline.queue.converting },
+                { name: "Indexing", hint: "being made searchable", value: pipeline.queue.indexing },
+              ] as const
+            ).map((s) => (
+              <div key={s.name} className={tile}>
+                <p className={label}>{s.name}</p>
+                <p className="font-display mt-1 text-xl font-semibold tabular-nums">{s.value}</p>
+                <p className={`mt-0.5 text-[11px] ${muted}`}>{s.hint}</p>
+              </div>
+            ))}
+          </div>
+
+          {pipeline.files.length > 0 && (
+            <div className={`${card} mt-3 !p-0`}>
+              {pipeline.files.map((f, i) => (
+                <PipelineRow key={f.id} file={f} now={now} first={i === 0} />
+              ))}
+              {pipeline.files_total > pipeline.files.length && (
+                <p className={`border-t border-[var(--line)] px-4 py-2 text-xs ${muted}`}>
+                  + {pipeline.files_total - pipeline.files.length} more not shown
+                </p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
       <p className={`mt-6 ${label}`}>By folder</p>
       <div className={`${card} mt-2 space-y-4`}>
         {data.folders.length === 0 && <p className={muted}>No folders yet.</p>}
@@ -195,6 +322,29 @@ export function Progress() {
             </div>
           ))
         )}
+      </div>
+
+      {/* A file just became searchable. Announced politely for screen readers too. */}
+      <div role="status" aria-live="polite" className="fixed right-4 bottom-4 z-30 flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            className="flex items-center gap-2 rounded border border-[var(--signal)] bg-[var(--paper)] px-3 py-2.5 shadow-lg"
+          >
+            <CheckCircle2 size={16} className="shrink-0 text-[var(--signal)]" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate" title={t.text}>
+              {t.text}
+            </span>
+            <button
+              type="button"
+              onClick={() => dismissToast(t.id)}
+              aria-label="Dismiss"
+              className="shrink-0 cursor-pointer text-[var(--ink-soft)] hover:text-[var(--ink)]"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        ))}
       </div>
     </div>
   );

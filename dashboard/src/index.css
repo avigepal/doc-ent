@@ -9,29 +9,33 @@
 :root {
   --paper: #f2f1ed;
   --ink: #16181d;
-  --ink-soft: #52555c;
+  /* secondary text: kept above 7:1 on --paper so small labels stay readable */
+  --ink-soft: #45484f;
   --line: #d8d5cc;
   --index: #2b3a67;
   --index-soft: #dce1ee;
-  --locator: #a8681f;
+  --locator: #8f5514;
   --locator-soft: #f3e3cc;
   --signal: #3f6b46;
   --danger: #a3372f;
   /* syntax highlighting (code blocks in answers) */
   --code-keyword: #8a3b9a;
   --code-string: #3f6b46;
-  --code-number: #a8681f;
-  --code-comment: #7b7e86;
+  --code-number: #8f5514;
+  --code-comment: #6b6e76;
   --code-function: #2b3a67;
   --code-variable: #a3372f;
-  color-scheme: light dark;
+  color-scheme: light;
 }
 
+/* Dark tokens, applied two ways: automatically when the OS asks for dark
+   (unless the user pinned light), and when the user pinned dark with the
+   header toggle (html[data-theme="dark"]). Keep the two blocks identical. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --paper: #15171b;
     --ink: #ece9e2;
-    --ink-soft: #9a9ca3;
+    --ink-soft: #b3b5bb;
     --line: #2b2e34;
     --index: #8ea0e0;
     --index-soft: #1f2740;
@@ -42,10 +46,31 @@
     --code-keyword: #c792ea;
     --code-string: #83b48a;
     --code-number: #e3a85e;
-    --code-comment: #7d8089;
+    --code-comment: #9a9da5;
     --code-function: #8ea0e0;
     --code-variable: #e17c73;
+    color-scheme: dark;
   }
+}
+
+:root[data-theme="dark"] {
+  --paper: #15171b;
+  --ink: #ece9e2;
+  --ink-soft: #b3b5bb;
+  --line: #2b2e34;
+  --index: #8ea0e0;
+  --index-soft: #1f2740;
+  --locator: #e3a85e;
+  --locator-soft: #33260f;
+  --signal: #83b48a;
+  --danger: #e17c73;
+  --code-keyword: #c792ea;
+  --code-string: #83b48a;
+  --code-number: #e3a85e;
+  --code-comment: #9a9da5;
+  --code-function: #8ea0e0;
+  --code-variable: #e17c73;
+  color-scheme: dark;
 }
 
 * {

@@ -1,6 +1,7 @@
 import { LogOut } from "lucide-react";
 import { Link, NavLink } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { ThemeToggle } from "./ThemeToggle";
 
 const NAV = [
   { to: "/ask", label: "Ask" },
@@ -14,7 +15,7 @@ const NAV = [
 export const HEADER_HEIGHT_CLASS = "h-12";
 
 const tabClasses = ({ isActive }: { isActive: boolean }) =>
-  `relative flex h-full shrink-0 items-center px-3 text-[13px] transition-colors ${
+  `relative flex h-full shrink-0 items-center px-3 text-[14px] transition-colors ${
     isActive
       ? "font-medium text-[var(--index)] after:absolute after:inset-x-3 after:bottom-0 after:h-[2px] after:bg-[var(--index)]"
       : "text-[var(--ink-soft)] hover:text-[var(--ink)]"
@@ -49,6 +50,8 @@ export function Header() {
           </NavLink>
         ))}
       </nav>
+
+      <ThemeToggle />
 
       <button
         onClick={logout}

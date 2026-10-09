@@ -4,6 +4,7 @@ import type { ComponentProps, ReactElement, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
+import { CitationNumber } from "./CitationPreview";
 import { parseViewHref, useViewer } from "./DocumentViewer";
 import type { ViewTarget } from "./DocumentViewer";
 
@@ -13,7 +14,7 @@ const CITATION = /\[(\d+(?:\s*,\s*\d+)*)\]/g;
 /** Turns "[n]" markers inside plain text into small badges so they read as
  * citations instead of stray brackets. They match the numbers in the
  * Sources dialog. */
-function withCitations(children: ReactNode, onCitation?: (n: number) => void): ReactNode {
+function withCitations(children: ReactNode, onCitation?: (n: number) => void, preview?: CitationPreviewInfo): ReactNode {
   if (typeof children === "string") {
     const parts: ReactNode[] = [];
     let last = 0;
@@ -26,18 +27,16 @@ function withCitations(children: ReactNode, onCitation?: (n: number) => void): R
           key={start}
           className="font-mono mx-0.5 rounded-sm bg-[var(--locator-soft)] px-1 py-px text-[10px] text-[var(--ink-soft)]"
         >
-          {onCitation
+          {onCitation || preview
             ? numbers.map((n, i) => (
                 <span key={i}>
                   {i > 0 && ", "}
-                  <button
-                    type="button"
-                    onClick={() => onCitation(n)}
-                    title={`Open source ${n}`}
-                    className="cursor-pointer underline-offset-2 hover:text-[var(--index)] hover:underline"
-                  >
-                    {n}
-                  </button>
+                  <CitationNumber
+                    n={n}
+                    path={preview?.sourceFor(n)}
+                    question={preview?.question ?? ""}
+                    onOpen={onCitation}
+                  />
                 </span>
               ))
             : match[1]}
@@ -49,8 +48,16 @@ function withCitations(children: ReactNode, onCitation?: (n: number) => void): R
     if (last < children.length) parts.push(children.slice(last));
     return parts;
   }
-  if (Array.isArray(children)) return children.map((child, i) => <span key={i}>{withCitations(child, onCitation)}</span>);
+  if (Array.isArray(children)) {
+    return children.map((child, i) => <span key={i}>{withCitations(child, onCitation, preview)}</span>);
+  }
   return children;
+}
+
+/** Lets a [n] badge show the cited file and the passage that matches the question. */
+export interface CitationPreviewInfo {
+  sourceFor: (n: number) => string | undefined;
+  question: string;
 }
 
 type P<T extends keyof React.JSX.IntrinsicElements> = ComponentProps<T> & { node?: unknown };
@@ -120,13 +127,22 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
-function buildComponents(onCitation?: (n: number) => void, openView?: (target: ViewTarget) => void) {
+function buildComponents(
+  onCitation?: (n: number) => void,
+  openView?: (target: ViewTarget) => void,
+  preview?: CitationPreviewInfo,
+) {
   return {
-  p: ({ node: _n, children, ...rest }: P<"p">) => <p {...rest}>{withCitations(children, onCitation)}</p>,
-  li: ({ node: _n, children, ...rest }: P<"li">) => <li {...rest}>{withCitations(children, onCitation)}</li>,
+  // prose is held to a readable line length (~70 characters); tables and code keep the full width
+  p: ({ node: _n, children, ...rest }: P<"p">) => (
+    <p {...rest} className="max-w-[72ch]">
+      {withCitations(children, onCitation, preview)}
+    </p>
+  ),
+  li: ({ node: _n, children, ...rest }: P<"li">) => <li {...rest}>{withCitations(children, onCitation, preview)}</li>,
   td: ({ node: _n, children, ...rest }: P<"td">) => (
     <td {...rest} className="border border-[var(--line)] px-2.5 py-1.5 align-top">
-      {withCitations(children, onCitation)}
+      {withCitations(children, onCitation, preview)}
     </td>
   ),
   th: ({ node: _n, children, ...rest }: P<"th">) => (
@@ -134,16 +150,16 @@ function buildComponents(onCitation?: (n: number) => void, openView?: (target: V
       {...rest}
       className="border border-[var(--line)] bg-[var(--locator-soft)] px-2.5 py-1.5 text-left font-semibold"
     >
-      {withCitations(children, onCitation)}
+      {withCitations(children, onCitation, preview)}
     </th>
   ),
   table: ({ node: _n, ...rest }: P<"table">) => (
     <div className="overflow-x-auto">
-      <table {...rest} className="w-full border-collapse text-[13px]" />
+      <table {...rest} className="w-full border-collapse text-[14px]" />
     </div>
   ),
-  ul: ({ node: _n, ...rest }: P<"ul">) => <ul {...rest} className="list-disc space-y-1 pl-5" />,
-  ol: ({ node: _n, ...rest }: P<"ol">) => <ol {...rest} className="list-decimal space-y-1 pl-5" />,
+  ul: ({ node: _n, ...rest }: P<"ul">) => <ul {...rest} className="max-w-[72ch] list-disc space-y-1 pl-5" />,
+  ol: ({ node: _n, ...rest }: P<"ol">) => <ol {...rest} className="max-w-[72ch] list-decimal space-y-1 pl-5" />,
   h1: ({ node: _n, ...rest }: P<"h1">) => <h3 {...rest} className="font-display mt-1 text-[15px] font-semibold" />,
   h2: ({ node: _n, ...rest }: P<"h2">) => <h3 {...rest} className="font-display mt-1 text-[15px] font-semibold" />,
   h3: ({ node: _n, ...rest }: P<"h3">) => <h4 {...rest} className="font-display mt-1 text-sm font-semibold" />,
@@ -166,7 +182,7 @@ function buildComponents(onCitation?: (n: number) => void, openView?: (target: V
     return <a {...rest} target="_blank" rel="noreferrer" className="text-[var(--index)] underline underline-offset-2" />;
   },
   blockquote: ({ node: _n, ...rest }: P<"blockquote">) => (
-    <blockquote {...rest} className="border-l-2 border-[var(--line)] pl-3 text-[var(--ink-soft)]" />
+    <blockquote {...rest} className="max-w-[72ch] border-l-2 border-[var(--line)] pl-3 text-[var(--ink-soft)]" />
   ),
   hr: () => <hr className="border-[var(--line)]" />,
   // Fenced blocks arrive as <pre><code>; inline code is a bare <code>.
@@ -179,12 +195,21 @@ function buildComponents(onCitation?: (n: number) => void, openView?: (target: V
 
 /** Renders a model answer as Markdown (headings, lists, tables, code,
  * bold) like a chat assistant, instead of showing the raw symbols. */
-export function Markdown({ children, onCitation }: { children: string; onCitation?: (n: number) => void }) {
+export function Markdown({
+  children,
+  onCitation,
+  preview,
+}: {
+  children: string;
+  onCitation?: (n: number) => void;
+  /** Keep this object stable (useMemo): a new one rebuilds the rendered answer. */
+  preview?: CitationPreviewInfo;
+}) {
   const viewer = useViewer();
   const open = viewer?.open;
-  const components = useMemo(() => buildComponents(onCitation, open), [onCitation, open]);
+  const components = useMemo(() => buildComponents(onCitation, open, preview), [onCitation, open, preview]);
   return (
-    <div className="space-y-3 text-[14px] leading-relaxed break-words">
+    <div className="space-y-3 text-[15px] leading-relaxed break-words">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
