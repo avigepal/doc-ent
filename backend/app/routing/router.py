@@ -36,12 +36,13 @@ ROUTE_LABELS = {
     "chat": "Thinking…",
     "need_file": "",
     "keyword": "Finding matches…",
+    "report": "Reading all your documents…",
 }
 
 
 @dataclass(frozen=True)
 class RouteDecision:
-    action: str  # "search" | "edit" | "chat" | "need_file"
+    action: str  # "search" | "edit" | "chat" | "need_file" | "keyword" | "report"
     query: str  # for search: a self-contained question; otherwise the message itself
     source: str  # "rules" | "model" | "fallback"
 
@@ -85,6 +86,23 @@ _MENTIONS_FILE = re.compile(
     r"presentation|slides?|paper|page|notes?)\b",
     re.IGNORECASE,
 )
+
+
+# "full report on this person", "write a detailed profile of Asha": a request
+# for everything the documents say about a subject. The subject has to follow
+# ("on/about/of/for"), so "summarize the complete report" -- a question about a
+# file that happens to be a report -- is not one.
+_REPORT_REQUEST = re.compile(
+    r"\b(?:full|complete|detailed|comprehensive|in[- ]depth|thorough)\s+"
+    r"(?:report|profile|dossier|biography|write[- ]?up|background(?:\s+check)?)\s+(?:on|about|of|for)\b"
+    r"|\b(?:make|write|prepare|generate|create|produce|compile|build)\s+(?:me\s+)?(?:a\s+|an\s+|the\s+)?"
+    r"(?:\w+\s+){0,2}(?:report|profile|dossier|biography)\s+(?:on|about|of|for)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_report(message: str) -> bool:
+    return bool(_REPORT_REQUEST.search(message))
 
 
 def looks_like_edit(message: str) -> bool:
@@ -217,6 +235,9 @@ def decide_route(
         return RouteDecision("edit", text, "rules")
     if not has_attachments and (looks_like_edit(text) or looks_like_style(text)) and _MENTIONS_FILE.search(text):
         return RouteDecision("need_file", text, "rules")
+    # a request for everything about a subject: read all the documents, not just the best matches
+    if looks_like_report(text):
+        return RouteDecision("report", text, "rules")
     # "summarize this file", "what does the document say": a question about the
     # attached file, nothing to resolve or rewrite
     if has_attachments and looks_like_question(text) and _MENTIONS_FILE.search(text):

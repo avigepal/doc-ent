@@ -130,6 +130,11 @@ class QueryHistoryRecord(Base):
     # but still reachable individually via /history/queries/{id}.
     conversation_id: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
+    # What produced the reply: "keyword" (a lookup, no model), "search" (a
+    # model answer from the documents), "chat", "edit", "catalog"; '' for
+    # rows from before this column existed.
+    route: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

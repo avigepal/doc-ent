@@ -26,5 +26,12 @@ def test_skips_hidden_directories(tmp_path: Path):
     assert list_top_level_folders(tmp_path) == ["contracts"]
 
 
+def test_skips_the_uploads_folder(tmp_path: Path):
+    (tmp_path / "uploads").mkdir()
+    (tmp_path / "contracts").mkdir()
+
+    assert list_top_level_folders(tmp_path) == ["contracts"]
+
+
 def test_missing_raw_dir_returns_empty_list(tmp_path: Path):
     assert list_top_level_folders(tmp_path / "does-not-exist") == []

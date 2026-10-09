@@ -64,6 +64,9 @@ _STATEMENTS = [
     """,
     "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS chat_only BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS conversation_id TEXT NOT NULL DEFAULT ''",
+    # How the reply was produced ("keyword", "search", "chat", ...), so a
+    # restored chat can label keyword matches apart from model answers.
+    "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS route TEXT NOT NULL DEFAULT ''",
     "CREATE INDEX IF NOT EXISTS idx_query_history_created_at ON query_history (created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_query_history_conversation_id ON query_history (conversation_id, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_export_history_created_at ON export_history (created_at DESC)",

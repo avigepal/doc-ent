@@ -79,10 +79,11 @@ def test_stream_query_chat_only_yields_meta_then_tokens_then_extra():
     assert events[3] == {"event": "extra", "data": {"cross_doc": None, "statistical": None}}
 
 
-def test_stream_query_grounded_streams_answer_then_correlation_extra():
+def test_stream_query_streams_the_answer_and_leaves_cross_doc_to_the_compare_button():
     llm = FakeLLM(stream_pieces=["the ", "answer"])
     chunks = [_chunk("a.pdf", "text a"), _chunk("b.pdf", "text b")]
 
+    # a comparison-style question over two files used to trigger a second model call
     events = list(stream_query("how do these relate?", chunks, {}, llm, chat_only=False))
 
     assert events[0] == {"event": "meta", "data": {"sources": ["a.pdf", "b.pdf"], "grounded": True}}
@@ -90,7 +91,8 @@ def test_stream_query_grounded_streams_answer_then_correlation_extra():
     assert tokens == ["the ", "answer"]
     extra = events[-1]
     assert extra["event"] == "extra"
-    assert extra["data"]["cross_doc"]["sources"] == ["a.pdf", "b.pdf"]
+    assert extra["data"]["cross_doc"] is None
+    assert len(llm.calls) == 1  # the answer only; no cross-document call
 
 
 def test_stream_query_not_grounded_skips_streaming_and_correlation():

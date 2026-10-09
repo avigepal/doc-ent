@@ -11,11 +11,12 @@ keep a file looking broken once a later one succeeded.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from app.ingestion.folder_status import top_level_folder
+from app.ingestion.uploads import UPLOAD_FOLDER_NAME
 
 # (file_id, path, status, size_bytes)
 FileRow = tuple[int, str, str, int]
@@ -33,8 +34,104 @@ _STAGE_LABELS = {
 RECENT_LIMIT = 10
 
 
+# Files still moving through the pipeline are listed one by one, up to this many
+# (the counts always cover all of them).
+PIPELINE_LIMIT = 100
+
+# A file counts as "just became ready" for this long after its index job finished,
+# so the dashboard can toast it even if it polls a few seconds late.
+READY_WINDOW = timedelta(minutes=2)
+
+# (file_id, path, status, size_bytes, discovered_at)
+PipelineFileRow = tuple[int, str, str, int, datetime | None]
+
+_PIPELINE_ORDER = {"converting": 0, "indexing": 1, "queued": 2}
+
+
 def _folder_of(path: str, raw_dir: str) -> str:
     return top_level_folder(path, raw_dir) or "(root)"
+
+
+def pipeline_candidates(files: list[PipelineFileRow], jobs: list[JobRow]) -> list[int]:
+    """Converted files whose indexing isn't recorded as done: the ones the
+    database has to be asked about ("do chunks exist?") to tell indexing from
+    ready. Everything else is decided from the job rows alone."""
+    index_done = {j[0] for j in jobs if j[1] == "index" and j[2] == "done"}
+    return [f[0] for f in files if f[2] in ("converted", "summarized") and f[0] not in index_done]
+
+
+def build_pipeline(
+    raw_dir: str,
+    files: list[PipelineFileRow],
+    jobs: list[JobRow],
+    chunked_ids: set[int],
+    now: datetime,
+) -> dict[str, Any]:
+    """Where each unfinished file is: queued -> converting -> indexing -> ready.
+
+    `jobs` are each file's latest job per type (as for build_progress);
+    `chunked_ids` are the ids among pipeline_candidates() that already have
+    chunks. Failed files are left out -- the Failures list already has them,
+    with the reason. Returns the per-stage counts, the unfinished files
+    (most advanced first) and the files that finished indexing moments ago."""
+    jobs_by_file: dict[int, dict[str, tuple]] = {}
+    for file_id, job_type, state, error, _retries, created_at, updated_at in jobs:
+        jobs_by_file.setdefault(file_id, {})[job_type] = (state, created_at, updated_at)
+
+    counts = {"queued": 0, "converting": 0, "indexing": 0}
+    in_flight: list[dict[str, Any]] = []
+    recently_ready: list[dict[str, Any]] = []
+
+    for file_id, path, status, size_bytes, discovered_at in files:
+        file_jobs = jobs_by_file.get(file_id, {})
+        index = file_jobs.get("index")
+        since: datetime | None
+        if status == "discovered":
+            running = [v for t, v in file_jobs.items() if t.startswith("convert") and v[0] == "running"]
+            stage = "converting" if running else "queued"
+            since = running[0][1] if running else discovered_at
+        elif status in ("converted", "summarized"):
+            if (index and index[0] == "done") or file_id in chunked_ids:
+                if index and index[0] == "done" and index[2] and now - index[2] <= READY_WINDOW:
+                    recently_ready.append(
+                        {
+                            "id": file_id,
+                            "file": Path(path).name,
+                            "folder": _folder_of(path, raw_dir),
+                            "finished_at": _iso(index[2]),
+                            "_sort": index[2],
+                        }
+                    )
+                continue
+            if index and index[0] == "failed":
+                continue
+            stage = "indexing"
+            converted_at = max((v[2] for t, v in file_jobs.items() if t.startswith("convert") and v[2]), default=None)
+            since = index[1] if index else converted_at or discovered_at
+        else:
+            continue  # failed or unsupported
+
+        counts[stage] += 1
+        in_flight.append(
+            {
+                "id": file_id,
+                "file": Path(path).name,
+                "folder": _folder_of(path, raw_dir),
+                "stage": stage,
+                "size_bytes": size_bytes,
+                "since": _iso(since),
+                "elapsed_seconds": max(0, int((now - since).total_seconds())) if since else 0,
+            }
+        )
+
+    in_flight.sort(key=lambda f: (_PIPELINE_ORDER[f["stage"]], -f["elapsed_seconds"]))
+    recently_ready.sort(key=lambda r: r["_sort"], reverse=True)
+    return {
+        "queue": counts,
+        "files": in_flight[:PIPELINE_LIMIT],
+        "files_total": len(in_flight),
+        "recently_ready": [{k: v for k, v in r.items() if k != "_sort"} for r in recently_ready],
+    }
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -116,7 +213,10 @@ def build_progress(raw_dir: str, files: list[FileRow], jobs: list[JobRow], now: 
 
     return {
         "totals": totals,
-        "folders": [{"name": name, **counts} for name, counts in sorted(folders.items())],
+        # chat attachments aren't a corpus folder; their files still count in the totals
+        "folders": [
+            {"name": name, **counts} for name, counts in sorted(folders.items()) if name != UPLOAD_FOLDER_NAME
+        ],
         "active": active,
         "failures": failures,
         "recent": recent,

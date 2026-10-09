@@ -9,17 +9,15 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.ingestion.progress import build_progress
-from app.models import FileRecord, JobRecord
+from app.ingestion.progress import build_pipeline, build_progress, pipeline_candidates
+from app.models import ChunkRecord, FileRecord, JobRecord
 
 
 def get_ingestion_progress(session: Session, raw_dir: str) -> dict:
-    files = [
-        (r.id, r.path, r.status, r.size_bytes)
-        for r in session.execute(
-            select(FileRecord.id, FileRecord.path, FileRecord.status, FileRecord.size_bytes)
-        ).all()
-    ]
+    file_rows = session.execute(
+        select(FileRecord.id, FileRecord.path, FileRecord.status, FileRecord.size_bytes, FileRecord.discovered_at)
+    ).all()
+    files = [(r.id, r.path, r.status, r.size_bytes) for r in file_rows]
 
     latest_ids = select(func.max(JobRecord.id)).group_by(JobRecord.file_id, JobRecord.job_type)
     jobs = [
@@ -27,7 +25,20 @@ def get_ingestion_progress(session: Session, raw_dir: str) -> dict:
         for j in session.execute(select(JobRecord).where(JobRecord.id.in_(latest_ids))).scalars()
     ]
 
-    progress = build_progress(raw_dir, files, jobs, datetime.now(timezone.utc))
+    now = datetime.now(timezone.utc)
+    progress = build_progress(raw_dir, files, jobs, now)
+
+    # Which converted files have chunks yet: asked only for those the jobs
+    # can't settle, so a big corpus of finished files costs nothing here.
+    pipeline_files = [(r.id, r.path, r.status, r.size_bytes, r.discovered_at) for r in file_rows]
+    candidates = pipeline_candidates(pipeline_files, jobs)
+    chunked = (
+        set(session.execute(select(ChunkRecord.file_id).where(ChunkRecord.file_id.in_(candidates)).distinct()).scalars())
+        if candidates
+        else set()
+    )
+    progress["pipeline"] = build_pipeline(raw_dir, pipeline_files, jobs, chunked, now)
+
     # With AUTO_SUMMARIZE off, "done" means converted (and indexed), not
     # summarized -- the UI needs to know which to count.
     progress["summaries_enabled"] = settings.auto_summarize

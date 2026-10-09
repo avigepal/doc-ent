@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -41,6 +42,11 @@ class QuestionRequest(BaseModel):
     # Set when regenerating an earlier reply: edits then continue from what
     # came before that reply, not from its own result.
     before_history_id: int | None = None
+    # "report": the dashboard's Full report toggle -- read every document in
+    # scope and write a complete report, whatever the message says (see
+    # app/search/report.py). Without it, a message like "full report on X" is
+    # recognised by the router instead.
+    mode: Literal["report"] | None = None
 
 app = FastAPI(title="Docent API")
 
@@ -231,6 +237,31 @@ def _attachment_names(session: Session, file_ids: list[int] | None) -> list[str]
     return [Path(p).name for p in paths]
 
 
+def _report_stream(session: Session, payload: "QuestionRequest"):
+    """Events for a full report: every passage of the files in the request's
+    scope is read, not just the best matches. With nothing to read (a direct
+    chat has no documents) the events say so instead of the model chatting."""
+    from app.search.report import ReportLimits, load_report_documents, report_events
+    from app.tasks.correlate import _raw_dir, _text_llm
+
+    documents = (
+        []
+        if payload.chat_only
+        else load_report_documents(session, _raw_dir, payload.folders, payload.author, payload.title, payload.file_ids)
+    )
+    return report_events(
+        payload.question,
+        documents,
+        _text_llm,
+        ReportLimits(
+            batch_chars=settings.report_batch_chars,
+            max_files=settings.report_max_files,
+            max_chars=settings.report_max_chars,
+            notes_chars=settings.report_notes_chars,
+        ),
+    )
+
+
 def _catalog_answer(session: Session, payload: "QuestionRequest", raw_dir: str) -> dict | None:
     """Questions about the library itself ("list all files", "how many
     documents") are answered from the files table, scoped like a normal
@@ -317,16 +348,41 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
         meta = {"sources": [], "grounded": False}
         extra = {"cross_doc": None, "statistical": None}
         export_ids: list[int] = []
+        route_action = ""
 
         def sse(evt: dict) -> str:
             return f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
 
+        def route_event(action: str, query: str) -> str:
+            return sse({"event": "route", "data": {"action": action, "label": "", "query": query, "source": "rules"}})
+
         try:
             question = payload.question
-            catalog = _catalog_answer(session, payload, _raw_dir)
-            if catalog is not None:
+            # the dashboard's "Full report" toggle: whatever the message says, read every
+            # document in scope (no catalog shortcut, keyword lookup or routing)
+            forced_report = payload.mode == "report"
+            catalog = None if forced_report else _catalog_answer(session, payload, _raw_dir)
+            if forced_report:
+                route_action = "report"
+                yield sse(
+                    {
+                        "event": "route",
+                        "data": {
+                            "action": "report",
+                            "label": ROUTE_LABELS["report"],
+                            "query": question,
+                            "source": "user",
+                        },
+                    }
+                )
+                events = _report_stream(session, payload)
+            elif catalog is not None:
+                route_action = "catalog"
+                yield route_event(route_action, question)
                 events = catalog_events(catalog["answer"], catalog["sources"])
             elif payload.chat_only:
+                route_action = "chat"
+                yield route_event(route_action, question)
                 events = stream_query(question, [], {}, _text_llm, chat_only=True)
             else:
                 # The model decides what the message needs (search / edit a file / chat) --
@@ -350,6 +406,7 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
                         llm=_text_llm,
                         attachment_names=_attachment_names(session, payload.file_ids),
                     )
+                route_action = decision.action
                 yield sse(
                     {
                         "event": "route",
@@ -373,6 +430,8 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
                         conversation_id=payload.conversation_id,
                         before_history_id=payload.before_history_id,
                     )
+                elif decision.action == "report":
+                    events = _report_stream(session, payload)
                 elif decision.action == "need_file":
                     events = need_file_events()
                 elif decision.action == "chat":
@@ -424,11 +483,56 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
             title=payload.title,
             chat_only=payload.chat_only,
             conversation_id=payload.conversation_id,
+            route=route_action,
+            # a chat with files attached searched exactly those; History shows them as its scope
+            attached_filenames=_attachment_names(session, payload.file_ids),
         )
         link_exports(session, export_ids, history_id)
         yield f"event: done\ndata: {json.dumps({'history_id': history_id})}\n\n"
 
     return StreamingResponse(event_source(), media_type="text/event-stream")
+
+
+class CompareRequest(QuestionRequest):
+    # the stored reply to attach the findings to, so they survive a reload
+    history_id: int | None = None
+
+
+@app.post("/query/compare", dependencies=[Depends(require_bearer_token)])
+def query_compare_endpoint(payload: CompareRequest, session: Session = Depends(get_session)) -> dict:
+    """The "Compare across documents" button under an answer: searches again
+    with the same question and scope, and asks the model how the matching
+    documents relate to each other. On demand because on an ordinary question
+    it only restates the answer and doubles the wait. `cross_doc` is null when
+    fewer than two documents match well enough to compare."""
+    from app.history.store import set_cross_doc
+    from app.search.correlate import compare_documents
+    from app.search.pgvector_retrieval import retrieve_top_k
+    from app.tasks.correlate import _embedder, _raw_dir, _text_llm
+
+    if payload.chat_only:
+        raise HTTPException(status_code=400, detail="there are no documents to compare in a direct chat")
+
+    [query_embedding] = _embedder.embed([payload.question])
+    chunks = retrieve_top_k(
+        session,
+        query_embedding,
+        k=payload.k,
+        raw_dir=_raw_dir,
+        folders=payload.folders,
+        author=payload.author,
+        title=payload.title,
+        query_text=payload.question,
+        file_ids=payload.file_ids,
+    )
+    result = compare_documents(payload.question, chunks, _text_llm)
+    if result is None:
+        return {"cross_doc": None}
+
+    cross_doc = {"answer": result.answer, "sources": result.sources}
+    if payload.history_id is not None:
+        set_cross_doc(session, payload.history_id, cross_doc)
+    return {"cross_doc": cross_doc}
 
 
 MAX_UPLOAD_FILES = 50
@@ -891,6 +995,102 @@ def documents_endpoint(
         offset=offset,
     )
     return {"documents": documents, "total": total}
+
+
+class DocumentIdsRequest(BaseModel):
+    ids: list[int]
+
+
+MAX_BULK_DOCUMENTS = 500
+
+
+def _checked_ids(payload: DocumentIdsRequest) -> list[int]:
+    if not payload.ids:
+        raise HTTPException(status_code=400, detail="no documents selected")
+    if len(payload.ids) > MAX_BULK_DOCUMENTS:
+        raise HTTPException(status_code=400, detail=f"too many documents (max {MAX_BULK_DOCUMENTS})")
+    return payload.ids
+
+
+@app.post("/documents/upload", dependencies=[Depends(require_bearer_token)])
+def documents_upload_endpoint(
+    folder: str = Form(...),
+    files: list[UploadFile] = File(...),
+    session: Session = Depends(get_session),
+) -> dict:
+    """The Documents page's drop zone: saves the files into a corpus folder
+    under raw/ (created if it doesn't exist yet), then registers them and
+    queues their conversion on the upload lane right away. Unlike
+    /ingest/upload these are permanent corpus files, not a chat's
+    attachments, so the "uploads" folder (which a new chat empties) is refused."""
+    from app.export.adhoc import safe_filename
+    from app.ingestion.uploads import UPLOAD_FOLDER_NAME, safe_upload_filename, unique_destination
+
+    folder_name = safe_filename(folder)
+    if not folder_name or folder_name == UPLOAD_FOLDER_NAME:
+        raise HTTPException(status_code=400, detail=f'pick a folder other than "{UPLOAD_FOLDER_NAME}"')
+    if len(files) > MAX_UPLOAD_FILES:
+        raise HTTPException(status_code=400, detail=f"too many files (max {MAX_UPLOAD_FILES})")
+
+    target_dir = Path(settings.data_dir) / "raw" / folder_name
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    saved_paths = []
+    total_bytes = 0
+    for f in files:
+        content = f.file.read()
+        total_bytes += len(content)
+        if total_bytes > MAX_UPLOAD_TOTAL_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"uploads exceed {MAX_UPLOAD_TOTAL_BYTES // (1024 * 1024)}MB total",
+            )
+        dest = unique_destination(target_dir, safe_upload_filename(f.filename or "upload"))
+        dest.write_bytes(content)
+        saved_paths.append(dest)
+
+    file_ids = register_files(session, saved_paths)
+    convert_enqueued = run_convert_enqueue(session, file_ids, queue=UPLOAD_QUEUE)
+    return {
+        "folder": folder_name,
+        "uploaded": [p.name for p in saved_paths],
+        "file_ids": file_ids,
+        "convert_enqueued": convert_enqueued,
+    }
+
+
+@app.post("/documents/delete", dependencies=[Depends(require_bearer_token)])
+def documents_delete_endpoint(payload: DocumentIdsRequest, session: Session = Depends(get_session)) -> dict:
+    """Deletes the selected documents from disk and the index. Irreversible;
+    the dashboard asks for confirmation first."""
+    from app.ingestion.documents_actions import delete_documents
+
+    return {"deleted": delete_documents(session, settings.data_dir, _checked_ids(payload))}
+
+
+@app.post("/folders/{name}/clear", dependencies=[Depends(require_bearer_token)])
+def clear_folder_endpoint(name: str, session: Session = Depends(get_session)) -> dict:
+    """Deletes every file in one corpus folder from disk and the index and
+    leaves the empty folder. Irreversible; the dashboard asks first."""
+    from app.ingestion.documents_actions import FolderNotFound, InvalidFolderName, clear_folder
+
+    try:
+        return {"deleted": clear_folder(session, settings.data_dir, name)}
+    except InvalidFolderName:
+        raise HTTPException(status_code=400, detail="that folder can't be cleared")
+    except FolderNotFound:
+        raise HTTPException(status_code=404, detail="no such folder")
+
+
+@app.post("/documents/reprocess", dependencies=[Depends(require_bearer_token)])
+def documents_reprocess_endpoint(payload: DocumentIdsRequest, session: Session = Depends(get_session)) -> dict:
+    """Runs the selected documents through conversion and indexing again
+    (after fixing the cause of a failure, or changing the OCR settings)."""
+    from app.ingestion.documents_actions import reprocess_documents
+
+    ids = reprocess_documents(session, _checked_ids(payload))
+    convert_enqueued = run_convert_enqueue(session, ids, queue=UPLOAD_QUEUE) if ids else {}
+    return {"reprocessed": len(ids), "convert_enqueued": convert_enqueued}
 
 
 # Phase 7: serve the built React dashboard as static files so the whole

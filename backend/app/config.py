@@ -47,6 +47,16 @@ class Settings(BaseSettings):
     # all 28 (see backend/app/evaluation).
     search_top_k: int = 12
 
+    # "Full report" mode reads every passage of the documents in scope (see
+    # app/search/report.py). report_batch_chars: how much of a document one
+    # note-taking call reads; report_max_files / report_max_chars: the largest
+    # selection it accepts (it reads all of it, so it takes minutes on a big
+    # one); report_notes_chars: the notes the final report is written from.
+    report_batch_chars: int = 12000
+    report_max_files: int = 15
+    report_max_chars: int = 300000
+    report_notes_chars: int = 24000
+
     # Docling (PDF/Office conversion) speed vs. fidelity -- see
     # app/conversion/backends.py. Defaults match Docling's own.
     # docling_ocr: OCR text inside images/scans. Off = faster, but scanned

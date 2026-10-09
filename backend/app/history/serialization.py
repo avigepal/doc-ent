@@ -29,6 +29,7 @@ def query_record_to_summary(record: Any) -> dict[str, Any]:
         "attached_filenames": record.attached_filenames or [],
         "chat_only": record.chat_only,
         "conversation_id": record.conversation_id,
+        "route": getattr(record, "route", "") or "",
         "created_at": _iso(record.created_at),
     }
 

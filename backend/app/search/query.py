@@ -93,12 +93,13 @@ def stream_query(
     of returning one QueryResult, so a caller (see app/main.py's
     /query/stream) can forward each piece to the client as it's produced.
 
-    Only the main answer actually streams. cross_doc/statistical (when
-    they apply) come from correlate(), which makes its own separate LLM
-    call(s) with a different prompt shape — "here's a report" rather than
-    "keep typing the next token" — so those arrive as one blocking
-    "extra" event after the main answer finishes, same latency trade as
-    before, just not blocking the FIRST thing the user sees.
+    Only the main answer actually streams. Statistical findings (when they
+    apply) come from correlate(), which makes its own separate LLM call
+    with a different prompt shape, so they arrive as one blocking "extra"
+    event after the main answer finishes. Cross-document findings are NOT
+    produced here: on an ordinary question they only restate the answer, so
+    the dashboard asks for them on demand (see compare_documents and
+    POST /query/compare). "cross_doc" is therefore always None here.
 
     Event order is always: one "meta" (sources + grounded, known before
     any generation starts), then zero or more "token" (answer text
@@ -122,9 +123,7 @@ def stream_query(
     prompt = f"Question: {question}\n\nSources:\n{context}"
     yield from _stream_answer(llm, GROUNDED_SYSTEM_PROMPT, prompt)
 
-    report = correlate(
-        question, chunks, tables, llm, cross_doc_enabled=wants_cross_document(question)
-    )
+    report = correlate(question, chunks, tables, llm, cross_doc_enabled=False)
     yield {
         "event": "extra",
         "data": {

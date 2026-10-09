@@ -178,3 +178,45 @@ def test_correlate_skips_cross_doc_when_disabled():
 
     assert report.cross_doc is None
     assert llm.calls == []
+
+
+# ---------- on-demand comparison (the "Compare across documents" button) ----------
+
+def test_compare_documents_compares_the_matching_files():
+    from app.search.correlate import compare_documents
+
+    llm = FakeLLM("they agree")
+    chunks = [_chunk("a.pdf", "H", "text a"), _chunk("b.pdf", "H", "text b")]
+
+    result = compare_documents("mac vs pc", chunks, llm)
+
+    assert result is not None
+    assert result.answer == "they agree"
+    assert result.sources == ["a.pdf", "b.pdf"]
+
+
+def test_compare_documents_leaves_out_weakly_matching_files():
+    from app.search.correlate import compare_documents
+
+    llm = FakeLLM()
+    chunks = [
+        _chunk("a.pdf", "H", "text a", score=0.9),
+        _chunk("b.pdf", "H", "text b", score=0.8),
+        _chunk("unrelated_quote.pdf", "H", "other", score=0.1),
+    ]
+
+    result = compare_documents("mac vs pc", chunks, llm)
+
+    assert result.sources == ["a.pdf", "b.pdf"]
+    assert "unrelated_quote.pdf" not in llm.calls[0][1]
+
+
+def test_compare_documents_needs_two_matching_files():
+    from app.search.correlate import compare_documents
+
+    llm = FakeLLM()
+    only_one_matches = [_chunk("a.pdf", "H", "x", score=0.9), _chunk("b.pdf", "H", "y", score=0.05)]
+
+    assert compare_documents("q", only_one_matches, llm) is None
+    assert compare_documents("q", [_chunk("a.pdf", "H", "x"), _chunk("a.pdf", "H2", "y")], llm) is None
+    assert llm.calls == []  # no model call when there is nothing to compare

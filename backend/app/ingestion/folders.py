@@ -11,8 +11,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.ingestion.uploads import UPLOAD_FOLDER_NAME
+
 
 def list_top_level_folders(raw_dir: Path) -> list[str]:
+    """The uploads folder holds the chats' attachments, not a corpus folder
+    to browse or scope a search to, so it is left out."""
     if not raw_dir.exists():
         return []
-    return sorted(p.name for p in raw_dir.iterdir() if p.is_dir() and not p.name.startswith("."))
+    return sorted(
+        p.name
+        for p in raw_dir.iterdir()
+        if p.is_dir() and not p.name.startswith(".") and p.name != UPLOAD_FOLDER_NAME
+    )

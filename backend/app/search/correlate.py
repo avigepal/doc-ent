@@ -145,6 +145,27 @@ def wants_cross_document(question: str) -> bool:
     return bool(_COMPARISON_CUES.search(question))
 
 
+# A passage this weakly related to the question isn't worth comparing: it is
+# what lets an unrelated file's content into the findings.
+COMPARE_MIN_SCORE = 0.3
+
+
+def compare_documents(
+    question: str,
+    chunks: list[RetrievedChunk],
+    llm: LLMClient,
+    min_score: float = COMPARE_MIN_SCORE,
+) -> CrossDocResult | None:
+    """Cross-document findings on demand (the dashboard's "Compare across
+    documents" button). Only passages that actually match the question are
+    compared; None when fewer than two different files are left, since there
+    is nothing to compare then."""
+    relevant = [c for c in chunks if c.score >= min_score]
+    if len({c.file_path for c in relevant}) < 2:
+        return None
+    return cross_document_correlate(question, relevant, llm)
+
+
 def correlate(
     question: str,
     chunks: list[RetrievedChunk],

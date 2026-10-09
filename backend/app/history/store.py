@@ -27,6 +27,7 @@ def record_query(
     attached_filenames: list[str] | None = None,
     chat_only: bool = False,
     conversation_id: str = "",
+    route: str = "",
 ) -> int:
     """Stores a completed query result and returns the new row's id, which
     the endpoint hands back to the client so a later /export can link to
@@ -44,10 +45,18 @@ def record_query(
         attached_filenames=attached_filenames or [],
         chat_only=chat_only,
         conversation_id=conversation_id,
+        route=route,
     )
     session.add(record)
     session.commit()
     return record.id
+
+
+def set_cross_doc(session: Session, history_id: int, cross_doc: dict) -> None:
+    """Saves cross-document findings the user asked for after the answer, so
+    the stored turn shows them when the chat is restored."""
+    session.execute(update(QueryHistoryRecord).where(QueryHistoryRecord.id == history_id).values(cross_doc=cross_doc))
+    session.commit()
 
 
 def record_export(

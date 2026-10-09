@@ -54,6 +54,21 @@ def _remove(path: Path) -> None:
         pass
 
 
+def remove_document_files(data: Path, path: str) -> None:
+    """Deletes a document's file under raw/ together with its converted text
+    and summary. A path outside raw/ is left alone."""
+    raw_root = data / "raw"
+    try:
+        relative = Path(path).relative_to(raw_root)
+    except ValueError:
+        return
+    _remove(Path(path))
+    markdown = (data / "converted" / relative).with_suffix(".md")
+    _remove(markdown)
+    _remove(markdown.with_suffix(".md.json"))
+    _remove((data / "summaries" / relative).with_suffix(".md"))
+
+
 def delete_uploads(session: Session, data_dir: str, file_ids: list[int] | None = None) -> int:
     """Delete uploaded files: all of them (file_ids=None -- a new chat) or
     just the given ones (a chip's X). Removes the database rows (chunks and
@@ -78,15 +93,7 @@ def delete_uploads(session: Session, data_dir: str, file_ids: list[int] | None =
         clear_enqueued(ids)
 
     for _file_id, path in rows:
-        try:
-            relative = Path(path).relative_to(raw_root)
-        except ValueError:
-            continue
-        _remove(Path(path))
-        markdown = (data / "converted" / relative).with_suffix(".md")
-        _remove(markdown)
-        _remove(markdown.with_suffix(".md.json"))
-        _remove((data / "summaries" / relative).with_suffix(".md"))
+        remove_document_files(data, path)
 
     if file_ids is None:
         # whole-folder clear: also sweep anything on disk the database never
