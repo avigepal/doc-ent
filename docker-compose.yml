@@ -68,13 +68,13 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./backend/sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
 
   redis:
     image: redis:7-alpine
     restart: always
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
   flower:
     image: mher/flower:2.0
@@ -82,7 +82,7 @@ services:
     environment:
       - CELERY_BROKER_URL=${REDIS_URL:-redis://redis:6379/0}
     ports:
-      - "5555:5555"
+      - "127.0.0.1:5555:5555"
     depends_on:
       - redis
 
@@ -94,7 +94,8 @@ services:
       dockerfile: backend/Dockerfile
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
-      - "8000:8000"
+      # localhost only: put a reverse proxy (Caddy) in front for HTTPS
+      - "127.0.0.1:8000:8000"
 
   # ---------- Celery workers (stubs until phase 2/3/4 are built) ----------
   celery-convert-fast:
