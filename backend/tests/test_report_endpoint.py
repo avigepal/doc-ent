@@ -46,6 +46,10 @@ def client(monkeypatch):
     monkeypatch.setattr(correlate, "_text_llm", llm)
     monkeypatch.setattr(store, "record_query", MagicMock(return_value=42))
     monkeypatch.setattr(store, "link_exports", MagicMock())
+    import app.search.report_scope as report_scope
+
+    # the folder is small, so the report reads it in full (narrowing to a subject is tested in test_report_scope.py)
+    monkeypatch.setattr(report_scope, "count_scope_files", lambda session, conditions: 2)
     monkeypatch.setattr(main, "_attachment_names", lambda session, ids: [])
     # a shortcut that must NOT be taken in report mode
     monkeypatch.setattr(main, "_catalog_answer", MagicMock(side_effect=AssertionError("catalog path taken")))
@@ -217,3 +221,41 @@ def test_an_edit_sounding_message_without_the_toggle_is_not_an_edit(client, monk
     events = _post(client, question="rewrite this file in French", chat_only=True)
 
     assert dict(events)["route"]["action"] == "chat"
+
+
+def _big_folder(monkeypatch, found=30):
+    import app.search.report_scope as report_scope
+    from app.search.subjects import Subject, SubjectHits
+
+    names = [f"{i}.pdf" for i in range(found)]
+    hits = SubjectHits()
+    hits.paths = {i: f"/data/raw/big/{n}" for i, n in enumerate(names)}
+    hits.counts = [{i: 1 for i in hits.paths}]
+    docs = _docs(*names)
+    monkeypatch.setattr(report_scope, "count_scope_files", lambda session, conditions: 5000)
+    monkeypatch.setattr(report_scope, "extract_subjects", lambda request, llm: [Subject("Asha Rao")])
+    monkeypatch.setattr(report_scope, "find_subject_hits", lambda session, subjects, conditions: hits)
+    monkeypatch.setattr(report_scope, "load_subject_documents", lambda session, subjects, paths, ids: docs)
+
+
+def test_a_report_over_a_big_folder_first_shows_a_plan_and_waits(client, monkeypatch):
+    _big_folder(monkeypatch)
+
+    events = _post(client, question="everything about Asha Rao", mode="report", folders=["big"])
+
+    text = "".join(d["text"] for n, d in events if n == "token")
+    assert "30 documents" in text and "Read them all" in text
+    assert [d["action"] for n, d in events if n == "route"][-1] == "report_plan"
+    assert client.record_query.call_args.kwargs["route"] == "report_plan"
+    assert all(kind != "chat" or system != report.MAP_SYSTEM_PROMPT for kind, system in client.llm.calls)
+
+
+def test_confirming_the_plan_reads_the_documents_that_mention_the_subject(client, monkeypatch):
+    _big_folder(monkeypatch)
+
+    events = _post(client, question="everything about Asha Rao", mode="report", folders=["big"], confirm_report=True)
+
+    assert "".join(d["text"] for n, d in events if n == "token") == "The full report."
+    reads = sum(1 for kind, system in client.llm.calls if kind == "chat" and system == report.MAP_SYSTEM_PROMPT)
+    assert reads == 30
+    assert client.record_query.call_args.kwargs["route"] == "report"

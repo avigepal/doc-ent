@@ -158,7 +158,8 @@ export const api = {
       // regenerating an earlier reply: edits continue from what came before it
       beforeHistoryId?: number;
       // "report": read every document in scope and write a full report, whatever the message says
-      mode?: "report" | "edit";
+      // "report_confirmed": a report over a big folder after the user saw the plan and pressed "Read them all"
+      mode?: "report" | "edit" | "report_confirmed";
     } = {},
     handlers: {
       onMeta?: (meta: { sources: string[]; grounded: boolean }) => void;
@@ -195,7 +196,8 @@ export const api = {
         conversation_id: options.conversationId ?? "",
         file_ids: options.fileIds?.length ? options.fileIds : null,
         before_history_id: options.beforeHistoryId ?? null,
-        mode: options.mode ?? null,
+        mode: options.mode === "report_confirmed" ? "report" : (options.mode ?? null),
+        confirm_report: options.mode === "report_confirmed",
       }),
     });
 

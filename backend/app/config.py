@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     report_max_files: int = 50  # matches MAX_UPLOAD_FILES in main.py
     report_max_chars: int = 1000000
     report_notes_chars: int = 40000
+    # A report about a subject (a person, a company) in a folder with more than report_max_files
+    # documents reads only the documents that mention it: at most report_subject_max_files of them
+    # (the passages around the mentions, not whole documents). Above report_confirm_above documents
+    # the dashboard first shows how many were found and how long it will take;
+    # report_seconds_per_call is the guess that estimate is based on.
+    report_subject_max_files: int = 300
+    report_confirm_above: int = 20
+    report_seconds_per_call: int = 20
 
     # Docling (PDF/Office conversion) speed vs. fidelity -- see
     # app/conversion/backends.py. Defaults match Docling's own.

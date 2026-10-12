@@ -38,6 +38,10 @@ from app.search.query import StreamEvent, _stream_answer
 _NO_THINKING = {"chat_template_kwargs": {"enable_thinking": False}}
 
 NOTES_MAX_TOKENS = 1500
+# A document's notes are only shortened on their own when longer than this (or than the budget
+# shared out evenly, if that is more); beyond that many documents are merged together instead.
+MIN_NOTES_PER_DOCUMENT = 1200
+MAX_MERGE_LAYERS = 4
 
 MAP_SYSTEM_PROMPT = (
     "You take notes from ONE document for a report.\n"
@@ -50,6 +54,13 @@ MAP_SYSTEM_PROMPT = (
 CONDENSE_SYSTEM_PROMPT = (
     "Shorten these notes without losing any fact. Keep every name, date, number, place, title and detail; "
     "remove repetition and wording only. Reply with the shortened bullet points and nothing else."
+)
+
+MERGE_SYSTEM_PROMPT = (
+    "Combine these notes, each taken from documents numbered [n], into one set of bullet points without "
+    "losing any fact. Keep every name, date, number, place, title and detail, merge repeated facts into "
+    "one bullet, and after each fact keep the [n] numbers of the documents it comes from. "
+    "Reply with the bullet points and nothing else."
 )
 
 REPORT_SYSTEM_PROMPT = (
@@ -91,7 +102,8 @@ NOTHING_RELEVANT_MESSAGE = (
 TOO_MANY_MESSAGE = (
     "A full report reads every selected document, and this selection is too large for that "
     "({detail}). Attach just the files you want covered, or choose a smaller folder under Scope, "
-    "and ask again."
+    "and ask again. Or name the person or topic the report is about, so that only the documents "
+    "that mention it are read."
 )
 
 
@@ -206,10 +218,17 @@ def scope_problem(documents: list[ReportDocument], limits: ReportLimits) -> str 
     return None
 
 
-def notes_prompt(request: str, notes: dict[str, str], empty: list[str]) -> str:
-    parts = [f"Request: {request}", "", "Notes from each document:"]
-    for i, (name, text) in enumerate(notes.items(), start=1):
-        parts.append(f"\n[{i}] {name}\n{text}")
+def notes_prompt(request: str, notes: dict[str, str], empty: list[str], merged: str | None = None) -> str:
+    """With `merged` (notes combined across many documents) the [n] numbers in
+    it are the numbers in the document list that follows."""
+    if merged is not None:
+        parts = [f"Request: {request}", "", "Notes from the documents (the [n] numbers are listed below):", merged]
+        parts.append("\nDocuments:")
+        parts.extend(f"[{i}] {name}" for i, name in enumerate(notes, start=1))
+    else:
+        parts = [f"Request: {request}", "", "Notes from each document:"]
+        for i, (name, text) in enumerate(notes.items(), start=1):
+            parts.append(f"\n[{i}] {name}\n{text}")
     if empty:
         parts.append("\nDocuments read that had nothing relevant: " + ", ".join(empty))
     return "\n".join(parts)
@@ -301,9 +320,10 @@ def _gather_notes(
         else:
             empty.append(doc.name)
 
-    # Too much for one prompt: shorten the longest notes, keeping every fact.
+    # Too much for one prompt: shorten the longest notes, keeping every fact...
+    merged: str | None = None
     if with_notes:
-        per_document = max(limits.notes_chars // len(with_notes), 1)
+        per_document = max(limits.notes_chars // len(with_notes), MIN_NOTES_PER_DOCUMENT)
         if sum(len(t) for t in with_notes.values()) > limits.notes_chars:
             for path, text in list(with_notes.items()):
                 if len(text) > per_document:
@@ -315,7 +335,67 @@ def _gather_notes(
                         max_tokens=NOTES_MAX_TOKENS,
                         extra_body=_NO_THINKING,
                     ).strip() or text
-    return with_notes, names, empty
+        # ...and when many documents together are still too much, merge them in layers
+        if sum(len(t) for t in with_notes.values()) > limits.notes_chars:
+            blocks = [f"[{i}] {names[path]}\n{text}" for i, (path, text) in enumerate(with_notes.items(), start=1)]
+            merged = yield from _merge_layers(blocks, llm, limits)
+    return with_notes, names, empty, merged
+
+
+def group_blocks(blocks: list[str], max_chars: int) -> list[list[str]]:
+    """Consecutive blocks in groups of at most max_chars (a longer block is a group of its own)."""
+    groups: list[list[str]] = []
+    size = 0
+    for block in blocks:
+        if groups and size + len(block) + 2 <= max_chars:
+            groups[-1].append(block)
+            size += len(block) + 2
+        else:
+            groups.append([block])
+            size = len(block)
+    return groups
+
+
+def _merge_layers(blocks: list[str], llm: LLMClient, limits: ReportLimits) -> Iterator[StreamEvent]:
+    """Notes from many documents boiled down to `limits.notes_chars`: groups of
+    notes are merged into one set of bullets each (keeping the [n] document
+    numbers), and the results are merged again until they fit. A layer that
+    does not shrink the text ends the loop; what is left is cut, not repeated."""
+    for layer in range(1, MAX_MERGE_LAYERS + 1):
+        total = sum(len(b) for b in blocks)
+        if total <= limits.notes_chars:
+            break
+        groups = group_blocks(blocks, max(limits.batch_chars, 1000))
+
+        def merge(group: list[str]) -> str:
+            joined = "\n\n".join(group)
+            return llm.chat(
+                MERGE_SYSTEM_PROMPT,
+                joined,
+                temperature=0.1,
+                max_tokens=NOTES_MAX_TOKENS,
+                extra_body=_NO_THINKING,
+            ).strip() or joined
+
+        executor = ThreadPoolExecutor(max_workers=max(1, min(limits.parallel, len(groups))))
+        try:
+            futures = {executor.submit(merge, group): i for i, group in enumerate(groups)}
+            results: dict[int, str] = {}
+            for done, future in enumerate(as_completed(futures), start=1):
+                results[futures[future]] = future.result()
+                yield _status(f"Combining the notes… step {layer}, {done} of {len(groups)}")
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+        merged_blocks = [results[i] for i in range(len(groups))]
+        shrank = sum(len(b) for b in merged_blocks) < total
+        blocks = merged_blocks
+        if not shrank:
+            break
+
+    text = "\n\n".join(blocks)
+    if len(text) > limits.notes_chars:  # still over after the last layer: cut, don't fail the report
+        text = text[: limits.notes_chars].rsplit("\n", 1)[0]
+    return text
 
 
 def report_events(
@@ -324,21 +404,22 @@ def report_events(
     llm: LLMClient,
     limits: ReportLimits,
     store: NotesStore | None = None,
+    prompt_extra: str = "",
 ) -> Iterator[StreamEvent]:
     problem = scope_problem(documents, limits)
     if problem:
         yield from _nothing_to_report(problem)
         return
 
-    notes, names, empty = yield from _gather_notes(request, documents, llm, limits, store)
+    notes, names, empty, merged = yield from _gather_notes(request, documents, llm, limits, store)
     if not notes:
         yield from _nothing_to_report(NOTHING_RELEVANT_MESSAGE.format(count=len(documents)))
         return
 
     yield _status("Writing the report…")
     yield {"event": "meta", "data": {"sources": list(notes), "grounded": True}}
-    prompt = notes_prompt(request, {names[p]: t for p, t in notes.items()}, empty)
-    yield from _stream_answer(llm, REPORT_SYSTEM_PROMPT, prompt)
+    prompt = notes_prompt(request, {names[p]: t for p, t in notes.items()}, empty, merged)
+    yield from _stream_answer(llm, REPORT_SYSTEM_PROMPT + prompt_extra, prompt)
     yield {"event": "extra", "data": {"cross_doc": None, "statistical": None}}
 
 
@@ -362,7 +443,7 @@ def refine_events(
         yield from _nothing_to_report(problem)
         return
 
-    notes, names, empty = yield from _gather_notes(request, documents, llm, limits, store)
+    notes, names, empty, merged = yield from _gather_notes(request, documents, llm, limits, store)
     if not notes:
         yield from _nothing_to_report(NOTHING_RELEVANT_MESSAGE.format(count=len(documents)))
         return
@@ -372,7 +453,7 @@ def refine_events(
     prompt = (
         f"Instruction: {instruction}\n\n"
         f"Previous report:\n{previous_report[:PREVIOUS_REPORT_CHARS]}\n\n"
-        + notes_prompt(request, {names[p]: t for p, t in notes.items()}, empty)
+        + notes_prompt(request, {names[p]: t for p, t in notes.items()}, empty, merged)
     )
     yield from _stream_answer(llm, REFINE_SYSTEM_PROMPT, prompt)
     yield {"event": "extra", "data": {"cross_doc": None, "statistical": None}}

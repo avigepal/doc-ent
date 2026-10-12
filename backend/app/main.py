@@ -50,6 +50,8 @@ class QuestionRequest(BaseModel):
     # "edit": the Edit file toggle -- the message is an instruction for the
     # attached file(s); editing is never guessed from the wording.
     mode: Literal["report", "edit"] | None = None
+    # the user pressed "Read them all" on the plan shown for a report over a big folder
+    confirm_report: bool = False
 
 app = FastAPI(title="Docent API")
 
@@ -240,38 +242,71 @@ def _attachment_names(session: Session, file_ids: list[int] | None) -> list[str]
     return [Path(p).name for p in paths]
 
 
-def _report_inputs(session: Session, payload: "QuestionRequest"):
-    """(documents, limits, saved-notes store) for a full report. With nothing to
-    read (a direct chat has no documents) the report events say so instead of
-    the model chatting."""
-    from app.search.report import ReportLimits, load_report_documents
-    from app.search.report_notes import DbNotesStore
-    from app.tasks.correlate import _raw_dir
+def _report_limits():
+    from app.search.report import ReportLimits
 
-    documents = (
-        []
-        if payload.chat_only
-        else load_report_documents(session, _raw_dir, payload.folders, payload.author, payload.title, payload.file_ids)
-    )
-    limits = ReportLimits(
+    return ReportLimits(
         batch_chars=settings.report_batch_chars,
         max_files=settings.report_max_files,
         max_chars=settings.report_max_chars,
         notes_chars=settings.report_notes_chars,
         parallel=settings.report_parallel,
     )
-    return documents, limits, DbNotesStore(session)
+
+
+def _report_scope(session: Session, payload: "QuestionRequest", request: str, confirmed: bool):
+    """Generator: status events, then returns the ReportScope -- which documents a
+    full report reads (see app/search/report_scope.py). With nothing to read (a
+    direct chat has no documents) the report events say so instead of the model chatting."""
+    from app.search.report_scope import resolve_report_scope
+    from app.tasks.correlate import _raw_dir, _text_llm
+
+    return resolve_report_scope(
+        session,
+        raw_dir=_raw_dir,
+        request=request,
+        folders=payload.folders,
+        author=payload.author,
+        title=payload.title,
+        file_ids=payload.file_ids,
+        chat_only=payload.chat_only,
+        llm=_text_llm,
+        limits=_report_limits(),
+        subject_max_files=settings.report_subject_max_files,
+        confirm_above=settings.report_confirm_above,
+        seconds_per_call=settings.report_seconds_per_call,
+        confirmed=confirmed,
+    )
 
 
 def _report_stream(session: Session, payload: "QuestionRequest"):
     """Events for a full report: every passage of the files in the request's
-    scope is read, not just the best matches. Notes saved by an earlier report
-    on the same request are reused."""
-    from app.search.report import report_events
+    scope is read, not just the best matches (in a folder too big for that, the
+    passages that mention the subject of the request). Notes saved by an earlier
+    report on the same request are reused. For a big folder the first answer is
+    a plan (how many documents, how long) and the report waits for confirmation."""
+    from app.search.report import _nothing_to_report, report_events
+    from app.search.report_notes import DbNotesStore
     from app.tasks.correlate import _text_llm
 
-    documents, limits, store = _report_inputs(session, payload)
-    return report_events(payload.question, documents, _text_llm, limits, store)
+    scope = yield from _report_scope(session, payload, payload.question, payload.confirm_report)
+    if scope.nothing:
+        yield from _nothing_to_report(scope.nothing)
+    elif scope.plan:
+        yield {
+            "event": "route",
+            "data": {"action": "report_plan", "label": "", "query": payload.question, "source": "user"},
+        }
+        yield from _nothing_to_report(scope.plan)
+    else:
+        yield from report_events(
+            payload.question,
+            scope.documents,
+            _text_llm,
+            scope.limits,
+            DbNotesStore(session),
+            scope.prompt_extra,
+        )
 
 
 def _report_followup(session: Session, payload: "QuestionRequest") -> tuple[str, str] | None:
@@ -287,11 +322,18 @@ def _report_followup(session: Session, payload: "QuestionRequest") -> tuple[str,
 
 def _report_refine_stream(session: Session, payload: "QuestionRequest", request: str, previous_report: str):
     """The same report notes (saved ones, so nothing is read again) with the new instruction applied."""
-    from app.search.report import refine_events
+    from app.search.report import _nothing_to_report, refine_events
+    from app.search.report_notes import DbNotesStore
     from app.tasks.correlate import _text_llm
 
-    documents, limits, store = _report_inputs(session, payload)
-    return refine_events(request, payload.question, previous_report, documents, _text_llm, limits, store)
+    # the report being changed was already confirmed, so the same documents are read again, without asking
+    scope = yield from _report_scope(session, payload, request, True)
+    if scope.nothing:
+        yield from _nothing_to_report(scope.nothing)
+    else:
+        yield from refine_events(
+            request, payload.question, previous_report, scope.documents, _text_llm, scope.limits, DbNotesStore(session)
+        )
 
 
 def _catalog_answer(session: Session, payload: "QuestionRequest", raw_dir: str) -> dict | None:
@@ -524,6 +566,8 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
                     answer_parts.append(evt["data"]["text"])
                 elif evt["event"] == "extra":
                     extra = evt["data"]
+                elif evt["event"] == "route":
+                    route_action = evt["data"]["action"]  # e.g. a report that turned into a plan
                 elif evt["event"] == "file":
                     export_ids.append(evt["data"]["id"])
                 yield sse(evt)

@@ -604,7 +604,7 @@ export function Ask() {
     chatOnly: boolean,
     fileIds: number[] = [],
     beforeHistoryId?: number,
-    mode?: "report" | "edit",
+    mode?: "report" | "edit" | "report_confirmed",
   ) => {
     const controller = new AbortController();
     abortRef.current = controller;
@@ -627,7 +627,7 @@ export function Ask() {
     fileIds: number[],
     beforeHistoryId: number | undefined,
     signal: AbortSignal,
-    mode?: "report" | "edit",
+    mode?: "report" | "edit" | "report_confirmed",
   ) => {
     // what the finished reply turned out to be, for the related questions asked for afterwards
     const got = { answer: "", sources: [] as string[], route: "", historyId: undefined as number | undefined };
@@ -735,7 +735,7 @@ export function Ask() {
     folders: string[],
     chatOnly: boolean,
     fileIds: number[],
-    mode?: "report" | "edit",
+    mode?: "report" | "edit" | "report_confirmed",
   ) => {
     const entryId = crypto.randomUUID();
 
@@ -868,7 +868,13 @@ export function Ask() {
           : attachments.filter((a) => a.stage === "ready").map((a) => a.id));
       // an edit continues from the reply before this one, never from this reply's own file
       // a regenerated report is a report again, whatever its wording
-      const mode = entry.route === "report" ? "report" : entry.route === "edit" ? "edit" : undefined;
+      // a report (or the plan shown before one) is regenerated as a confirmed report: the user already saw the plan
+      const mode =
+        entry.route === "report" || entry.route === "report_plan"
+          ? "report_confirmed"
+          : entry.route === "edit"
+            ? "edit"
+            : undefined;
       await streamInto(entryId, entry.result.question, entry.folders, entry.chatOnly, fileIds, entry.result.history_id, mode);
     } catch (err) {
       setError(err instanceof ApiError ? `${err.status}: ${err.message}` : String(err));
@@ -1044,6 +1050,16 @@ export function Ask() {
                 onDownloadFile={saveGeneratedFile}
                 actions={
                   <>
+                    {entry.route === "report_plan" && (
+                      <button
+                        title="Read the documents that mention it and write the full report"
+                        onClick={() => handleRegenerate(entry.id)}
+                        disabled={loading || regeneratingId !== null}
+                        className={`${buttonSecondary} inline-flex items-center gap-1.5`}
+                      >
+                        <ScrollText size={12} /> Read them all
+                      </button>
+                    )}
                     {entry.route === "keyword" && (
                       <button
                         title="Ask the AI model to summarize what these documents say about this term"
