@@ -61,11 +61,11 @@ def test_question_detection():
     assert not looks_like_question("thanks")
 
 
-def test_attached_file_plus_edit_verb_goes_to_edit_without_a_model_call():
-    llm = FakeRouterLLM()
+def test_an_edit_sounding_message_is_never_routed_to_edit_by_its_wording():
+    # editing only happens through the dashboard's Edit file button (mode "edit")
+    llm = FakeRouterLLM('{"action": "search", "query": "translate this to French"}')
     decision = decide_route("translate this to French", has_attachments=True, history=[], llm=llm)
-    assert (decision.action, decision.source) == ("edit", "rules")
-    assert llm.calls == []
+    assert decision.action == "search"
 
 
 def test_a_plain_first_question_goes_to_search_without_a_model_call():
@@ -120,10 +120,10 @@ def test_chat_is_never_chosen_when_files_are_attached():
     assert decision.action == "search"
 
 
-def test_edit_without_an_attached_file_asks_for_the_file():
+def test_the_model_cannot_choose_edit():
     llm = FakeRouterLLM('{"action": "edit", "query": "rewrite it"}')
-    decision = decide_route("rewrite it", has_attachments=False, history=[("a", "b")], llm=llm)
-    assert decision.action == "need_file"
+    decision = decide_route("rewrite it", has_attachments=True, history=[("a", "b")], llm=llm)
+    assert decision.action == "search"
 
 
 def test_json_wrapped_in_extra_text_is_still_parsed():
@@ -169,11 +169,10 @@ def test_an_absurdly_long_rewrite_is_ignored():
     "message",
     ["translate this document to French", "rewrite my resume in a formal tone", "please fix the attached report"],
 )
-def test_an_edit_request_about_a_file_with_nothing_attached_asks_for_the_file(message):
-    llm = FakeRouterLLM()
+def test_an_edit_request_with_nothing_attached_is_not_routed_to_edit(message):
+    llm = FakeRouterLLM('{"action": "search", "query": "x"}')
     decision = decide_route(message, has_attachments=False, history=[], llm=llm)
-    assert (decision.action, decision.source) == ("need_file", "rules")
-    assert llm.calls == []
+    assert decision.action not in ("edit", "need_file")
 
 
 def test_an_edit_sounding_search_with_no_file_mentioned_is_still_a_search():
@@ -203,22 +202,10 @@ def test_the_model_cannot_call_a_bare_word_an_edit(message):
     assert decision.action == "search"
 
 
-def test_a_replacement_phrased_without_an_edit_verb_is_still_an_edit_when_the_model_says_so():
-    llm = FakeRouterLLM('{"action": "edit", "query": "x"}')
-    decision = decide_route("Mac Mini instead of Mac Studio", has_attachments=True, history=[("a", "b")], llm=llm)
-    assert decision.action == "edit"
-
-
 @pytest.mark.parametrize(
     "message", ["make the headings dark blue", "use Arial 11 for the body", "centre the title", "set the margins to 1 inch"]
 )
-def test_styling_requests_with_a_file_go_to_edit_without_a_model_call(message):
-    llm = FakeRouterLLM()
+def test_styling_requests_are_not_routed_to_edit_by_their_wording(message):
+    llm = FakeRouterLLM('{"action": "search", "query": "x"}')
     decision = decide_route(message, has_attachments=True, history=[("a", "b")], llm=llm)
-    assert (decision.action, decision.source) == ("edit", "rules")
-    assert llm.calls == []
-
-
-def test_a_styling_request_about_a_file_that_is_not_attached_asks_for_it():
-    decision = decide_route("make the headings of this document blue", has_attachments=False, history=[], llm=FakeRouterLLM())
-    assert decision.action == "need_file"
+    assert decision.action == "search"

@@ -3,6 +3,7 @@ import {
   Check,
   Copy,
   Download,
+  FileEdit,
   FileText,
   GitCompare,
   Loader2,
@@ -13,6 +14,7 @@ import {
   Trash2,
   Upload,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import {
   useEffect,
@@ -205,12 +207,18 @@ function ScopeBar({
 /** Switches the next message to a full report: every document in scope is read
  * and a complete report is written, whatever the message says. It needs
  * something to read, so it is unavailable in a direct chat. */
-function ReportToggle({
+function ModeToggle({
+  label,
+  Icon,
+  help,
   on,
   disabled,
   disabledReason,
   onToggle,
 }: {
+  label: string;
+  Icon: LucideIcon;
+  help: string;
   on: boolean;
   disabled: boolean;
   disabledReason: string;
@@ -222,12 +230,8 @@ function ReportToggle({
       onClick={onToggle}
       disabled={disabled}
       aria-pressed={on && !disabled}
-      aria-label="Full report"
-      title={
-        disabled
-          ? disabledReason
-          : "Read every passage of the documents in scope and write a complete report (takes longer than a normal answer)"
-      }
+      aria-label={label}
+      title={disabled ? disabledReason : help}
       // a compact chip, sized like the other buttons on the line above the input
       className={`inline-flex shrink-0 items-center gap-1.5 rounded border px-2.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
         on && !disabled
@@ -235,7 +239,7 @@ function ReportToggle({
           : "cursor-pointer border-[var(--line)] text-[var(--ink-soft)] hover:border-[var(--index)] hover:text-[var(--index)]"
       }`}
     >
-      <ScrollText size={13} aria-hidden="true" /> Full report
+      <Icon size={13} aria-hidden="true" /> {label}
     </button>
   );
 }
@@ -412,6 +416,8 @@ export function Ask() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // The Full report toggle: the next message reads every document in scope.
   const [reportMode, setReportMode] = useState(false);
+  // The Edit file toggle: the next message is an instruction for the attached file.
+  const [editMode, setEditMode] = useState(false);
   // something to read: files attached to this chat, or a folder / everything under Scope
   const hasDocuments = attachments.length > 0 || scopeAll || selectedFolders.length > 0;
   // Mirror of `attachments` for the status poll, which outlives renders.
@@ -598,7 +604,7 @@ export function Ask() {
     chatOnly: boolean,
     fileIds: number[] = [],
     beforeHistoryId?: number,
-    mode?: "report",
+    mode?: "report" | "edit",
   ) => {
     const controller = new AbortController();
     abortRef.current = controller;
@@ -621,7 +627,7 @@ export function Ask() {
     fileIds: number[],
     beforeHistoryId: number | undefined,
     signal: AbortSignal,
-    mode?: "report",
+    mode?: "report" | "edit",
   ) => {
     // what the finished reply turned out to be, for the related questions asked for afterwards
     const got = { answer: "", sources: [] as string[], route: "", historyId: undefined as number | undefined };
@@ -729,7 +735,7 @@ export function Ask() {
     folders: string[],
     chatOnly: boolean,
     fileIds: number[],
-    mode?: "report",
+    mode?: "report" | "edit",
   ) => {
     const entryId = crypto.randomUUID();
 
@@ -810,8 +816,9 @@ export function Ask() {
     const fileIds = attachments.filter((a) => a.stage === "ready").map((a) => a.id);
     const chatOnly = fileIds.length === 0 && !scopeAll && selectedFolders.length === 0;
     // the Full report toggle applies to this one message, then switches itself off
-    const mode = reportMode && hasDocuments ? "report" : undefined;
+    const mode = editMode && fileIds.length > 0 ? "edit" : reportMode && hasDocuments ? "report" : undefined;
     setReportMode(false);
+    setEditMode(false);
     setQuestion("");
     await askNew(askedQuestion, selectedFolders, chatOnly, fileIds, mode);
   };
@@ -861,7 +868,7 @@ export function Ask() {
           : attachments.filter((a) => a.stage === "ready").map((a) => a.id));
       // an edit continues from the reply before this one, never from this reply's own file
       // a regenerated report is a report again, whatever its wording
-      const mode = entry.route === "report" ? "report" : undefined;
+      const mode = entry.route === "report" ? "report" : entry.route === "edit" ? "edit" : undefined;
       await streamInto(entryId, entry.result.question, entry.folders, entry.chatOnly, fileIds, entry.result.history_id, mode);
     } catch (err) {
       setError(err instanceof ApiError ? `${err.status}: ${err.message}` : String(err));
@@ -965,17 +972,38 @@ export function Ask() {
 
   // The Full report toggle sits at the right end of the line above the input: beside
   // the scope chips, or beside "Questions search only these files" when files are attached.
+  const hasFiles = attachments.some((a) => a.stage === "ready");
   const reportToggle = (
-    <ReportToggle
-      on={reportMode && hasDocuments}
+    <div className="flex items-center gap-1.5">
+      <ModeToggle
+        label="Edit file"
+        Icon={FileEdit}
+        help="Change the attached file as your message says and get a new file to download"
+        on={editMode && hasFiles}
+        disabled={!hasFiles || busy}
+        disabledReason={busy ? "Wait for the current reply to finish" : "Attach a file to edit"}
+        onToggle={() => {
+          setEditMode((v) => !v);
+          setReportMode(false);
+        }}
+      />
+      <ModeToggle
+        label="Full report"
+        Icon={ScrollText}
+        help="Read every passage of the documents in scope and write a complete report (takes longer than a normal answer)"
+        on={reportMode && hasDocuments}
       disabled={!hasDocuments || busy}
       disabledReason={
         busy
           ? "Wait for the current reply to finish"
           : "Choose a folder under Scope, or attach files, to write a report from"
       }
-      onToggle={() => setReportMode((v) => !v)}
+      onToggle={() => {
+        setReportMode((v) => !v);
+        setEditMode(false);
+      }}
     />
+    </div>
   );
 
   return (
@@ -1166,7 +1194,9 @@ export function Ask() {
                 ref={questionRef}
                 rows={1}
                 placeholder={
-                  reportMode && hasDocuments
+                  editMode && hasFiles
+                    ? "How should the file change? e.g. Replace 2023 with 2024"
+                    : reportMode && hasDocuments
                     ? "What should the report cover? e.g. Everything about this person"
                     : attachments.length > 0
                       ? "Ask about your attached files, or tell me how to change them…"

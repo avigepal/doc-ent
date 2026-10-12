@@ -47,7 +47,9 @@ class QuestionRequest(BaseModel):
     # scope and write a complete report, whatever the message says (see
     # app/search/report.py). Without it, a message like "full report on X" is
     # recognised by the router instead.
-    mode: Literal["report"] | None = None
+    # "edit": the Edit file toggle -- the message is an instruction for the
+    # attached file(s); editing is never guessed from the wording.
+    mode: Literal["report", "edit"] | None = None
 
 app = FastAPI(title="Docent API")
 
@@ -391,10 +393,37 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
             # the dashboard's "Full report" toggle: whatever the message says, read every
             # document in scope (no catalog shortcut, keyword lookup or routing)
             forced_report = payload.mode == "report"
+            forced_edit = payload.mode == "edit"
             # a change to the report this chat just made ("make it shorter") reuses its notes
-            followup = None if forced_report else _report_followup(session, payload)
-            catalog = None if (forced_report or followup) else _catalog_answer(session, payload, _raw_dir)
-            if followup:
+            followup = None if (forced_report or forced_edit) else _report_followup(session, payload)
+            catalog = None if (forced_report or forced_edit or followup) else _catalog_answer(session, payload, _raw_dir)
+            if forced_edit:
+                has_files = bool(payload.file_ids)
+                route_action = "edit" if has_files else "need_file"
+                yield sse(
+                    {
+                        "event": "route",
+                        "data": {
+                            "action": route_action,
+                            "label": ROUTE_LABELS[route_action],
+                            "query": question,
+                            "source": "user",
+                        },
+                    }
+                )
+                events = (
+                    edit_events(
+                        session,
+                        instruction=question,
+                        file_ids=payload.file_ids or [],
+                        llm=_text_llm,
+                        conversation_id=payload.conversation_id,
+                        before_history_id=payload.before_history_id,
+                    )
+                    if has_files
+                    else need_file_events()
+                )
+            elif followup:
                 route_action = "report_refine"
                 yield sse(
                     {
@@ -467,19 +496,8 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
 
                 if decision.action == "keyword":
                     events = keyword_stream
-                elif decision.action == "edit":
-                    events = edit_events(
-                        session,
-                        instruction=question,
-                        file_ids=payload.file_ids or [],
-                        llm=_text_llm,
-                        conversation_id=payload.conversation_id,
-                        before_history_id=payload.before_history_id,
-                    )
                 elif decision.action == "report":
                     events = _report_stream(session, payload)
-                elif decision.action == "need_file":
-                    events = need_file_events()
                 elif decision.action == "chat":
                     events = stream_query(question, [], {}, _text_llm, chat_only=True)
                 else:

@@ -178,3 +178,42 @@ def test_mode_is_validated(client):
     )
 
     assert response.status_code == 422
+
+
+def test_forced_edit_edits_the_attached_files_whatever_the_message_says(client, monkeypatch):
+    import app.editing.service as editing
+
+    seen = {}
+
+    def fake_edit_events(session, **kwargs):
+        seen.update(kwargs)
+        yield {"event": "meta", "data": {"sources": [], "grounded": False}}
+        yield {"event": "token", "data": {"text": "Done."}}
+        yield {"event": "extra", "data": {"cross_doc": None, "statistical": None}}
+
+    monkeypatch.setattr(editing, "edit_events", fake_edit_events)
+
+    events = _post(client, question="what is this?", mode="edit", file_ids=[7])
+
+    assert dict(events)["route"]["action"] == "edit"
+    assert seen["file_ids"] == [7] and seen["instruction"] == "what is this?"
+    assert client.record_query.call_args.kwargs["route"] == "edit"
+
+
+def test_forced_edit_with_no_file_asks_for_one(client):
+    events = _post(client, question="change the title", mode="edit")
+
+    assert dict(events)["route"]["action"] == "need_file"
+    assert client.llm.calls == []
+
+
+def test_an_edit_sounding_message_without_the_toggle_is_not_an_edit(client, monkeypatch):
+    import app.editing.service as editing
+
+    monkeypatch.setattr(editing, "edit_events", MagicMock(side_effect=AssertionError("edited without the toggle")))
+    monkeypatch.setattr(main, "_catalog_answer", MagicMock(return_value=None))
+
+    # the chat-only path needs no retrieval: the point is that it never reaches edit_events
+    events = _post(client, question="rewrite this file in French", chat_only=True)
+
+    assert dict(events)["route"]["action"] == "chat"

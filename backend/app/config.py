@@ -58,9 +58,9 @@ class Settings(BaseSettings):
     # one below the slot count so a chat can still be answered meanwhile.
     report_parallel: int = 3
     report_batch_chars: int = 12000
-    report_max_files: int = 15
-    report_max_chars: int = 300000
-    report_notes_chars: int = 24000
+    report_max_files: int = 50  # matches MAX_UPLOAD_FILES in main.py
+    report_max_chars: int = 1000000
+    report_notes_chars: int = 40000
 
     # Docling (PDF/Office conversion) speed vs. fidelity -- see
     # app/conversion/backends.py. Defaults match Docling's own.

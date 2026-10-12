@@ -158,7 +158,7 @@ export const api = {
       // regenerating an earlier reply: edits continue from what came before it
       beforeHistoryId?: number;
       // "report": read every document in scope and write a full report, whatever the message says
-      mode?: "report";
+      mode?: "report" | "edit";
     } = {},
     handlers: {
       onMeta?: (meta: { sources: string[]; grounded: boolean }) => void;

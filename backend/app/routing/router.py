@@ -1,9 +1,10 @@
 """Decide what a message needs before doing anything with it.
 
-The assistant can do three things with a message:
+The assistant can do two things with a message:
   search -- answer from the user's documents (the default)
-  edit   -- change an attached file / make a new file from it
   chat   -- small talk that isn't about their documents
+Editing a file is never guessed from the wording: the dashboard's Edit file
+button sends mode "edit", which skips routing (see app/main.py).
 
 Obvious cases are decided by rules, with no model call (free and
 predictable). Only the ambiguous ones -- a follow-up like "give me more
@@ -27,7 +28,7 @@ from app.editing.styling import looks_like_style
 
 logger = logging.getLogger(__name__)
 
-ACTIONS = ("search", "edit", "chat")
+ACTIONS = ("search", "chat")
 
 # Shown in the dashboard while the work runs.
 ROUTE_LABELS = {
@@ -151,19 +152,17 @@ def asks_for_change(message: str) -> bool:
 # ---------- model router ----------
 
 ROUTER_SYSTEM_PROMPT = (
-    "You route one message in a document assistant. The assistant can search the user's documents, "
-    "edit an attached file into a new file, or just chat.\n"
-    'Reply with JSON only: {"action": "search" | "edit" | "chat", "query": "..."}.\n'
+    "You route one message in a document assistant. The assistant can search the user's documents "
+    "or just chat.\n"
+    'Reply with JSON only: {"action": "search" | "chat", "query": "..."}.\n'
     "- search: the user asks about the content of their documents. This is the default when unsure.\n"
-    "- edit: the user wants an attached file changed, or a new file made from it (rewrite, translate, fix, "
-    "reformat, add or remove content...). Only when a file is attached.\n"
     "- chat: greetings, thanks, or general talk that has nothing to do with their documents.\n"
     'For search, "query" must be the message rewritten as a complete, self-contained question. Keep what '
     'the user asked for (more detail, an example, a comparison, a summary...) and name the thing that '
     '"this", "it" or "that one" refers to, taken from the earlier conversation. Example: earlier question '
     '"How do I enable Wake-on-LAN?", new message "give me more information about this" -> query '
     '"Give me more detailed information about how to enable Wake-on-LAN". '
-    'For edit and chat, repeat the message unchanged.'
+    'For chat, repeat the message unchanged.'
 )
 
 _ROUTER_SCHEMA = {
@@ -230,15 +229,6 @@ def _normalize(data: dict, message: str, has_attachments: bool) -> RouteDecision
     if action not in ACTIONS:
         return RouteDecision("search", message, "fallback")
 
-    # "summarize this file" is a question about the file, whatever the model
-    # thinks: an edit needs an edit verb or an explicit request for a new file.
-    if action == "edit" and looks_like_question(message) and not looks_like_edit(message):
-        action = "search"
-    # ...and "mad" or "ok" is not an instruction to change anything
-    if action == "edit" and not asks_for_change(message):
-        action = "search"
-    if action == "edit" and not has_attachments:
-        return RouteDecision("need_file", message, "model")
     # With files attached the user is almost always asking about them.
     if action == "chat" and has_attachments:
         action = "search"
@@ -259,10 +249,6 @@ def decide_route(
     text = message.strip()
 
     # 1. Rules: no model call.
-    if has_attachments and (looks_like_edit(text) or looks_like_style(text)):
-        return RouteDecision("edit", text, "rules")
-    if not has_attachments and (looks_like_edit(text) or looks_like_style(text)) and _MENTIONS_FILE.search(text):
-        return RouteDecision("need_file", text, "rules")
     # a request for everything about a subject: read all the documents, not just the best matches
     if looks_like_report(text):
         return RouteDecision("report", text, "rules")
