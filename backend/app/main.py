@@ -425,6 +425,7 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
     from app.editing.service import edit_events, need_file_events
     from app.history.store import link_exports, record_query
     from app.routing.router import ROUTE_LABELS, RouteDecision, decide_route
+    from app.search.answer_spec import parse_answer_spec
     from app.search.catalog import catalog_events
     from app.search.keyword import keyword_events, parse_keyword_query
     from app.search.pgvector_retrieval import retrieve_top_k
@@ -578,11 +579,14 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
                 else:
                     # search with the standalone version of the question, so a follow-up
                     # like "more about this" retrieves what it refers to
+                    # "in detail", "as a table with columns ...": the wording sets the answer's shape,
+                    # and a detailed answer reads more passages (app/search/answer_spec.py)
+                    spec = parse_answer_spec(question)
                     [query_embedding] = _embedder.embed([decision.query])
                     chunks = retrieve_top_k(
                         session,
                         query_embedding,
-                        k=payload.k,
+                        k=spec.retrieval_k(payload.k),
                         raw_dir=_raw_dir,
                         folders=payload.folders,
                         author=payload.author,
@@ -590,7 +594,7 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
                         query_text=decision.query,
                         file_ids=payload.file_ids,
                     )
-                    events = stream_query(decision.query, chunks, {}, _text_llm)
+                    events = stream_query(decision.query, chunks, {}, _text_llm, spec=spec)
 
             for evt in events:
                 if evt["event"] == "meta":

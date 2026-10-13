@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     # question. 8 missed the answer in 1 of 28 test questions; 12 found it in
     # all 28 (see backend/app/evaluation).
     search_top_k: int = 12
+    # A detailed answer ("in detail", "tell me everything about ...") is planned as sections and written
+    # one section per model call (app/search/sectioned.py), when the sources are at least this long.
+    sectioned_answers: bool = True
+    sectioned_min_chars: int = 6000
 
     # "Full report" mode reads every passage of the documents in scope (see
     # app/search/report.py). report_batch_chars: how much of a document one

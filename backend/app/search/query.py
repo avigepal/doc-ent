@@ -15,9 +15,12 @@ from typing import Iterator, Protocol, TypedDict
 
 import pandas as pd
 
+from app.config import settings
+from app.search.answer_spec import AnswerSpec
 from app.search.ask import GROUNDED_SYSTEM_PROMPT, NOT_FOUND_MESSAGE, answer_grounded, build_context
 from app.search.correlate import CrossDocResult, StatisticalResult, correlate, wants_cross_document
 from app.search.retrieval import RetrievedChunk
+from app.search.sectioned import plan_sections, section_events, should_write_in_sections
 
 
 class LLMClient(Protocol):
@@ -88,6 +91,7 @@ def stream_query(
     llm: LLMClient,
     chat_only: bool = False,
     similarity_threshold: float = 0.3,
+    spec: AnswerSpec | None = None,
 ) -> Iterator[StreamEvent]:
     """Streaming counterpart to run_query/run_chat — yields events instead
     of returning one QueryResult, so a caller (see app/main.py's
@@ -121,7 +125,23 @@ def stream_query(
     context, sources = build_context(chunks)
     yield {"event": "meta", "data": {"sources": sources, "grounded": True}}
     prompt = f"Question: {question}\n\nSources:\n{context}"
-    yield from _stream_answer(llm, GROUNDED_SYSTEM_PROMPT, prompt)
+    sections = (
+        plan_sections(question, context, llm)
+        if should_write_in_sections(
+            spec, context, enabled=settings.sectioned_answers, min_chars=settings.sectioned_min_chars
+        )
+        else []
+    )
+    if sections:
+        written = False
+        for event in section_events(question, context, spec, sections, llm):
+            written = written or event["event"] == "token"
+            yield event
+        if not written:
+            yield {"event": "token", "data": {"text": EMPTY_ANSWER_MESSAGE}}
+    else:
+        system = GROUNDED_SYSTEM_PROMPT + (spec.instructions() if spec else "")
+        yield from _stream_answer(llm, system, prompt)
 
     report = correlate(question, chunks, tables, llm, cross_doc_enabled=False)
     yield {
