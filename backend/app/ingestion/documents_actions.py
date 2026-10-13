@@ -39,6 +39,35 @@ def delete_documents(session: Session, data_dir: str, file_ids: list[int]) -> in
     return len(ids)
 
 
+def delete_matching(
+    session: Session,
+    data_dir: str,
+    *,
+    folder: str | None = None,
+    status: str | None = None,
+    search: str | None = None,
+    batch: int = 500,
+) -> int:
+    """Deletes every document the Documents page's filters match (all of them when
+    there are none), batch by batch, with the same disk-and-index removal as
+    delete_documents. A chat's attachments (the "uploads" folder) are never
+    included: a new chat clears those. Returns how many were removed."""
+    from app.ingestion.documents_query import document_conditions
+
+    # document_conditions leaves the "uploads" folder (chat attachments) out
+    conditions = document_conditions(str(Path(data_dir) / "raw"), folder, status, search)
+
+    removed_total = 0
+    while True:
+        ids = list(session.execute(select(FileRecord.id).where(*conditions).limit(batch)).scalars())
+        if not ids:
+            return removed_total
+        removed = delete_documents(session, data_dir, ids)
+        if removed == 0:
+            return removed_total
+        removed_total += removed
+
+
 class FolderNotFound(Exception):
     pass
 

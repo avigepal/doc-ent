@@ -11,6 +11,7 @@ and a file whose content changed is sent back through the pipeline.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -18,9 +19,9 @@ from sqlalchemy import case, delete, exists, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app import scan_status
 from app.config import settings
 from app.ingestion.prune import paths_to_prune
-from app.ingestion.summary import summarize
 from app.ingestion.walker import KnownFile, ScannedFile, scan_directory, scan_file
 from app.models import ChunkRecord, FileRecord, JobRecord
 from app.queue_guard import clear_enqueued, enqueue_once
@@ -70,18 +71,20 @@ def _upsert_file(session: Session, f: ScannedFile) -> None:
     session.execute(stmt)
 
 
-def _reconcile_statuses(session: Session) -> None:
+def _reconcile_statuses(session: Session, paths: list[str] | None = None) -> None:
     # Reconcile status with routing. Only touches "discovered"/"unsupported"
     # rows, so a converted or failed file is never reset by a rescan; a file
     # that becomes convertible later (e.g. vision gets implemented) flips back.
+    # `paths` limits it to those files (a scan batch) instead of the whole table.
+    only = [FileRecord.path.in_(paths)] if paths is not None else []
     session.execute(
         update(FileRecord)
-        .where(FileRecord.queue.not_in(RUNNABLE_QUEUES), FileRecord.status == "discovered")
+        .where(FileRecord.queue.not_in(RUNNABLE_QUEUES), FileRecord.status == "discovered", *only)
         .values(status="unsupported")
     )
     session.execute(
         update(FileRecord)
-        .where(FileRecord.queue.in_(RUNNABLE_QUEUES), FileRecord.status == "unsupported")
+        .where(FileRecord.queue.in_(RUNNABLE_QUEUES), FileRecord.status == "unsupported", *only)
         .values(status="discovered")
     )
 
@@ -141,33 +144,65 @@ def _reprocess_changed(session: Session, paths: list[str]) -> None:
     clear_enqueued(ids)
 
 
+# Files written (and committed) per step of a scan, so a big folder shows up on
+# the Progress page while it is still being read, and a scan that is killed
+# halfway keeps what it did (the next one skips the files it already hashed).
+SCAN_BATCH = 200
+
+
 def run_scan(session: Session) -> dict:
     raw_dir = Path(settings.data_dir) / "raw"
     known, statuses = _load_known(session)
-    scanned = list(scan_directory(raw_dir, known))
 
-    for f in scanned:
-        _upsert_file(session, f)
+    seen: set[str] = set()
+    changed: list[str] = []
+    total_bytes = 0
+    by_queue: Counter = Counter()
+    by_mime: Counter = Counter()
+    batch: list[ScannedFile] = []
 
-    _reconcile_statuses(session)
-    changed = changed_paths(known, statuses, scanned)
-    _reprocess_changed(session, changed)
+    def flush() -> None:
+        if not batch:
+            return
+        for f in batch:
+            _upsert_file(session, f)
+        _reconcile_statuses(session, [f.path for f in batch])
+        batch_changed = changed_paths(known, statuses, batch)
+        _reprocess_changed(session, batch_changed)
+        changed.extend(batch_changed)
+        session.commit()
+        scan_status.update(len(seen))
+        batch.clear()
 
-    # jobs and chunks go with the file (ON DELETE CASCADE), so a deleted
-    # file's failed job stops flagging its folder.
-    current = set(session.execute(select(FileRecord.path)).scalars())
-    stale = paths_to_prune(current, {f.path for f in scanned})
-    if stale:
-        session.execute(delete(FileRecord).where(FileRecord.path.in_(stale)))
-    session.commit()
+    scan_status.begin()
+    try:
+        for f in scan_directory(raw_dir, known):
+            seen.add(f.path)
+            total_bytes += f.size_bytes
+            by_queue[f.queue] += 1
+            by_mime[f.mime_type] += 1
+            batch.append(f)
+            if len(batch) >= SCAN_BATCH:
+                flush()
+        flush()
 
-    result = summarize(scanned)
+        # jobs and chunks go with the file (ON DELETE CASCADE), so a deleted
+        # file's failed job stops flagging its folder. Only a scan that walked
+        # everything prunes: one that died halfway never reaches this point.
+        current = set(session.execute(select(FileRecord.path)).scalars())
+        stale = paths_to_prune(current, seen)
+        if stale:
+            session.execute(delete(FileRecord).where(FileRecord.path.in_(stale)))
+        session.commit()
+    finally:
+        scan_status.finish(len(seen))
+
     return {
         "raw_dir": str(raw_dir),
-        "total_files": result.total_files,
-        "total_bytes": result.total_bytes,
-        "by_queue": result.by_queue,
-        "by_mime": result.by_mime,
+        "total_files": len(seen),
+        "total_bytes": total_bytes,
+        "by_queue": dict(by_queue),
+        "by_mime": dict(by_mime),
         "changed": len(changed),
     }
 

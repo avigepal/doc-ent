@@ -25,14 +25,17 @@ function Layout({ children }: { children: React.ReactNode }) {
   // inner mx-auto max-w-7xl center within THAT, the same way Ask's fixed
   // composer bar centers its own content. A margin would just shift the
   // max-w-7xl block rightward without giving it room to center.
-  const onAsk = useLocation().pathname === "/ask";
+  const pathname = useLocation().pathname;
+  const onAsk = pathname === "/ask";
+  // the Documents table and its folder tree use the whole width; other pages stay centered
+  const fullWidth = pathname === "/documents";
 
   return (
     <div className="min-h-screen pt-12 text-[14px] text-[var(--ink)]">
       <Header />
       {onAsk && <Sidebar />}
       <main className={onAsk ? "lg:pl-[220px]" : undefined}>
-        <div className="mx-auto max-w-7xl px-6 py-7">{children}</div>
+        <div className={fullWidth ? "px-6 py-7" : "mx-auto max-w-7xl px-6 py-7"}>{children}</div>
       </main>
     </div>
   );

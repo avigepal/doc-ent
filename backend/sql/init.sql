@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs (state);
+CREATE INDEX IF NOT EXISTS idx_jobs_file_type_id ON jobs (file_id, job_type, id DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_file_type_id ON jobs (file_id, job_type, id DESC);
 
 -- phase 4: chunk embeddings for search / correlation retrieval
 CREATE TABLE IF NOT EXISTS chunks (

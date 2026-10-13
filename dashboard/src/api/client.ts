@@ -99,6 +99,10 @@ export const api = {
   // reflects auto-ingest's live progress.
   listFolders: () => request<{ folders: FolderStatus[] }>("/folders"),
 
+  // One level of the Documents page's folder tree: the folders directly under `parent` ("" = top).
+  documentsTree: (parent = "") =>
+    request<DocumentsTreeLevel>(`/documents/tree?parent=${encodeURIComponent(parent)}`),
+
   // Creates a new top-level folder under raw/ — lets someone organize the
   // corpus from the dashboard instead of only via SSH/SFTP (e.g. FileZilla)
   // straight into HOST_DATA_DIR/raw on the server.
@@ -342,7 +346,10 @@ export const api = {
   },
 
   // Live pipeline state for the Progress page — polled while it's open.
-  ingestionProgress: () => request<IngestionProgress>("/ingestion/progress"),
+  ingestionProgress: (pipelineLimit = 100) =>
+    request<IngestionProgress>(`/ingestion/progress?pipeline_limit=${pipelineLimit}`),
+  stopPipeline: () => request<{ paused: boolean; purged: number }>("/ingest/stop", { method: "POST" }),
+  resumePipeline: () => request<{ paused: boolean }>("/ingest/resume", { method: "POST" }),
 
   stats: () => request<OverviewStats>("/stats"),
 
@@ -402,15 +409,23 @@ export const api = {
     }),
 
   // Deletes every file in one folder (the folder itself stays).
+  deleteMatching: (filters: { folder?: string; status?: string; q?: string }) =>
+    request<{ deleted: number }>("/documents/delete-matching", { method: "POST", body: JSON.stringify(filters) }),
+
   clearFolder: (name: string) =>
     request<{ deleted: number }>(`/folders/${encodeURIComponent(name)}/clear`, { method: "POST" }),
 
   reprocessDocuments: (ids: number[]) =>
     request<{ reprocessed: number }>("/documents/reprocess", { method: "POST", body: JSON.stringify({ ids }) }),
 
-  listDocuments: (opts: { folder?: string; status?: string; q?: string; limit?: number } = {}) => {
+  listDocuments: (
+    opts: { folder?: string; status?: string; q?: string; limit?: number; offset?: number; sort?: string; dir?: "asc" | "desc" } = {},
+  ) => {
     const params = new URLSearchParams();
     if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.offset) params.set("offset", String(opts.offset));
+    if (opts.sort) params.set("sort", opts.sort);
+    if (opts.dir) params.set("dir", opts.dir);
     if (opts.folder) params.set("folder", opts.folder);
     if (opts.status) params.set("status", opts.status);
     if (opts.q) params.set("q", opts.q);
@@ -489,6 +504,24 @@ export interface UploadStatusFile {
   detail: string | null;
 }
 
+export interface TreeFolder {
+  name: string;
+  /** Path from the top, such as "pgt/reports": what the folder filter takes. */
+  path: string;
+  /** Files inside, subfolders included. */
+  total: number;
+  pending: number;
+  failed: number;
+  has_subfolders: boolean;
+}
+
+export interface DocumentsTreeLevel {
+  parent: string;
+  folders: TreeFolder[];
+  /** Files sitting directly in `parent`, not in a subfolder. */
+  files_here: number;
+}
+
 export interface FolderStatus {
   name: string;
   total_files: number;
@@ -538,10 +571,18 @@ export interface QueryResult {
 
 export interface IngestionProgress {
   summaries_enabled: boolean;
+  /** Stop was pressed: nothing new is queued until Resume. */
+  paused: boolean;
+  /** The file scan: active while it is reading a folder, with how many files it has found so far. */
+  scan: { active: boolean; files_seen: number; started_at: string | null; finished_at?: string } | null;
+  /** The Docling server's health. `online` is null until the first check has finished. */
+  docling: { url: string; online: boolean | null; latency_ms: number | null; error: string | null; checked_at: string | null };
   totals: { files: number; unsupported: number; discovered: number; converted: number; summarized: number; running: number; failed: number };
   folders: { name: string; total: number; converted: number; summarized: number; running: number; failed: number }[];
   active: { file: string; folder: string; stage: string; size_bytes: number; elapsed_seconds: number }[];
   failures: { file: string; folder: string; stage: string; error: string | null; retries: number; at: string | null }[];
+  /** All failed jobs; `failures` lists the newest 200 of them. */
+  failures_total: number;
   recent: { file: string; folder: string; stage: string; finished_at: string | null }[];
   /** Files still moving through the pipeline, one by one, plus per-stage counts. */
   pipeline?: {

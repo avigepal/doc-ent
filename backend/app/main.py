@@ -88,7 +88,17 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/ingest/scan", dependencies=[Depends(require_bearer_token)])
+def _refuse_while_stopped() -> None:
+    """The manual ingest calls queue bulk work, so they wait for Resume after
+    Stop. Uploads (the Ask page's button, the Documents drop zone) don't use
+    these endpoints and keep working while stopped."""
+    from app.pipeline_control import is_paused
+
+    if is_paused():
+        raise HTTPException(status_code=409, detail="Processing is stopped. Press Resume on the Progress page first.")
+
+
+@app.post("/ingest/scan", dependencies=[Depends(require_bearer_token), Depends(_refuse_while_stopped)])
 def ingest_scan(session: Session = Depends(get_session)) -> dict:
     """Phase 1: walk DATA_DIR/raw, hash + classify every file, upsert into
     Postgres, and return a pre-run summary. Does not touch the GPU — safe
@@ -97,7 +107,7 @@ def ingest_scan(session: Session = Depends(get_session)) -> dict:
     return run_scan(session)
 
 
-@app.post("/ingest/convert", dependencies=[Depends(require_bearer_token)])
+@app.post("/ingest/convert", dependencies=[Depends(require_bearer_token), Depends(_refuse_while_stopped)])
 def ingest_convert(session: Session = Depends(get_session)) -> dict:
     """Phase 2: enqueue the implemented conversion tasks (convert_fast,
     convert_email_archive, convert_vision) for every discovered file routed
@@ -106,7 +116,7 @@ def ingest_convert(session: Session = Depends(get_session)) -> dict:
     return {"enqueued": run_convert_enqueue(session)}
 
 
-@app.post("/ingest/summarize", dependencies=[Depends(require_bearer_token)])
+@app.post("/ingest/summarize", dependencies=[Depends(require_bearer_token), Depends(_refuse_while_stopped)])
 def ingest_summarize(session: Session = Depends(get_session)) -> dict:
     """Phase 3: enqueue summarize_file for every converted file that
     hasn't been summarized yet. Needs a live llama-server (settings.
@@ -115,7 +125,7 @@ def ingest_summarize(session: Session = Depends(get_session)) -> dict:
     return {"enqueued": {"summarize": run_summarize_enqueue(session)}}
 
 
-@app.post("/ingest/retry-failed", dependencies=[Depends(require_bearer_token)])
+@app.post("/ingest/retry-failed", dependencies=[Depends(require_bearer_token), Depends(_refuse_while_stopped)])
 def ingest_retry_failed(session: Session = Depends(get_session)) -> dict:
     """Re-queues every file that ended up "failed" (conversion ran out of
     retries). Use after fixing whatever made them fail."""
@@ -123,7 +133,29 @@ def ingest_retry_failed(session: Session = Depends(get_session)) -> dict:
     return {"reset": reset, "enqueued": run_convert_enqueue(session)}
 
 
-@app.post("/ingest/index", dependencies=[Depends(require_bearer_token)])
+@app.post("/ingest/stop", dependencies=[Depends(require_bearer_token)])
+def ingest_stop() -> dict:
+    """The Progress page's Stop button: no more files are queued, the queues
+    are emptied, and the timer stays quiet until /ingest/resume. Files being
+    converted right now finish; nothing is deleted."""
+    from app.pipeline_control import stop
+
+    return stop()
+
+
+@app.post("/ingest/resume", dependencies=[Depends(require_bearer_token)])
+def ingest_resume() -> dict:
+    """Undo Stop: the remaining files are queued again by an ingest cycle that
+    starts right away."""
+    from app.pipeline_control import resume
+    from app.tasks.auto_ingest import auto_ingest_cycle
+
+    resume()
+    auto_ingest_cycle.delay()
+    return {"paused": False}
+
+
+@app.post("/ingest/index", dependencies=[Depends(require_bearer_token), Depends(_refuse_while_stopped)])
 def ingest_index(session: Session = Depends(get_session)) -> dict:
     """Phase 4: chunk + embed every converted file that has no chunks yet,
     so search can find it. Needs the embedding server (settings.
@@ -1054,14 +1086,20 @@ def file_sections_endpoint(
 
 
 @app.get("/ingestion/progress", dependencies=[Depends(require_bearer_token)])
-def ingestion_progress_endpoint(session: Session = Depends(get_session)) -> dict:
+def ingestion_progress_endpoint(pipeline_limit: int = 100, session: Session = Depends(get_session)) -> dict:
     """What the pipeline is doing right now: overall + per-folder counts,
     jobs currently running (with elapsed time), failures with their
     error, and the most recent completions. Backs the Progress page,
     which polls it. See app/ingestion/progress.py."""
     from app.ingestion.progress_query import get_ingestion_progress
 
-    return get_ingestion_progress(session, str(Path(settings.data_dir) / "raw"))
+    from app.ingestion.progress import PIPELINE_LIMIT, PIPELINE_LIMIT_MAX
+
+    return get_ingestion_progress(
+        session,
+        str(Path(settings.data_dir) / "raw"),
+        pipeline_limit=max(PIPELINE_LIMIT, min(pipeline_limit, PIPELINE_LIMIT_MAX)),
+    )
 
 
 @app.get("/stats", dependencies=[Depends(require_bearer_token)])
@@ -1082,10 +1120,12 @@ def documents_endpoint(
     q: str | None = None,
     limit: int = 200,
     offset: int = 0,
+    sort: str = "discovered_at",
+    dir: str = "desc",
     session: Session = Depends(get_session),
 ) -> dict:
-    """Every ingested file with its metadata, in one call. Backs the
-    Documents page's table."""
+    """One page of ingested files with their metadata, sorted on the server.
+    Backs the Documents page's table; `total` is the whole match count."""
     from app.ingestion.documents_query import list_documents
 
     documents, total = list_documents(
@@ -1094,14 +1134,24 @@ def documents_endpoint(
         folder=folder,
         status=status,
         search=q,
-        limit=min(limit, 500),
-        offset=offset,
+        limit=max(1, min(limit, 500)),
+        offset=max(0, offset),
+        sort=sort,
+        descending=dir != "asc",
     )
     return {"documents": documents, "total": total}
 
 
 class DocumentIdsRequest(BaseModel):
     ids: list[int]
+
+
+class DeleteMatchingRequest(BaseModel):
+    """The Documents page's filters; all empty means the whole library."""
+
+    folder: str | None = None
+    status: str | None = None
+    q: str | None = None
 
 
 MAX_BULK_DOCUMENTS = 500
@@ -1169,6 +1219,28 @@ def documents_delete_endpoint(payload: DocumentIdsRequest, session: Session = De
     from app.ingestion.documents_actions import delete_documents
 
     return {"deleted": delete_documents(session, settings.data_dir, _checked_ids(payload))}
+
+
+@app.get("/documents/tree", dependencies=[Depends(require_bearer_token)])
+def documents_tree_endpoint(parent: str = "", session: Session = Depends(get_session)) -> dict:
+    """One level of the Documents page's folder tree: the folders directly under `parent`
+    ("" for the top) with their file counts. Folders open one at a time."""
+    from app.ingestion.documents_query import folder_children
+
+    return folder_children(session, str(Path(settings.data_dir) / "raw"), parent)
+
+
+@app.post("/documents/delete-matching", dependencies=[Depends(require_bearer_token)])
+def documents_delete_matching_endpoint(payload: DeleteMatchingRequest, session: Session = Depends(get_session)) -> dict:
+    """Delete all: every document the filters match goes from disk and the index.
+    Irreversible; the dashboard asks first (and wants DELETE typed when nothing is filtered)."""
+    from app.ingestion.documents_actions import delete_matching
+
+    return {
+        "deleted": delete_matching(
+            session, settings.data_dir, folder=payload.folder, status=payload.status, search=payload.q
+        )
+    }
 
 
 @app.post("/folders/{name}/clear", dependencies=[Depends(require_bearer_token)])

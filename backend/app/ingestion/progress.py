@@ -35,8 +35,9 @@ RECENT_LIMIT = 10
 
 
 # Files still moving through the pipeline are listed one by one, up to this many
-# (the counts always cover all of them).
+# (the counts always cover all of them). The page can ask for more, up to the max.
 PIPELINE_LIMIT = 100
+PIPELINE_LIMIT_MAX = 1000
 
 # A file counts as "just became ready" for this long after its index job finished,
 # so the dashboard can toast it even if it polls a few seconds late.
@@ -66,6 +67,7 @@ def build_pipeline(
     jobs: list[JobRow],
     chunked_ids: set[int],
     now: datetime,
+    limit: int | None = None,
 ) -> dict[str, Any]:
     """Where each unfinished file is: queued -> converting -> indexing -> ready.
 
@@ -128,7 +130,7 @@ def build_pipeline(
     recently_ready.sort(key=lambda r: r["_sort"], reverse=True)
     return {
         "queue": counts,
-        "files": in_flight[:PIPELINE_LIMIT],
+        "files": in_flight[: PIPELINE_LIMIT if limit is None else limit],
         "files_total": len(in_flight),
         "recently_ready": [{k: v for k, v in r.items() if k != "_sort"} for r in recently_ready],
     }

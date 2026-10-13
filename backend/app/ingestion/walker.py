@@ -11,11 +11,14 @@ etc.) so this module stays testable without a database.
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
 from app.handlers.registry import UNSUPPORTED, route_mime
+
+logger = logging.getLogger(__name__)
 
 try:
     import magic
@@ -116,6 +119,13 @@ def scan_directory(root: Path, known: dict[str, KnownFile] | None = None) -> Ite
         return
 
     for path in sorted(root.rglob("*")):
-        if not path.is_file():
+        # A file that vanished mid-scan, or that can't be read (permissions, a locked
+        # system file), is skipped: one bad file must not abort a scan of thousands.
+        try:
+            if not path.is_file():
+                continue
+            scanned = scan_file(path, known.get(str(path)) if known else None)
+        except OSError:
+            logger.warning("skipping unreadable file %s", path, exc_info=True)
             continue
-        yield scan_file(path, known.get(str(path)) if known else None)
+        yield scanned

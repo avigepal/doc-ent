@@ -22,6 +22,10 @@ if settings.auto_ingest_interval_seconds > 0:
         "auto-ingest": {
             "task": "app.tasks.auto_ingest.auto_ingest_cycle",
             "schedule": float(settings.auto_ingest_interval_seconds),
+            # While one cycle runs (a first scan of a big folder takes a long time) the
+            # timer keeps queuing more behind it. One that waited a full interval is
+            # dropped instead of piling up: the next tick covers it.
+            "options": {"expires": float(settings.auto_ingest_interval_seconds)},
         },
     }
 

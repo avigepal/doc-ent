@@ -7,6 +7,7 @@ import {
   FileCode,
   FileImage,
   FileSpreadsheet,
+  Folder,
   FileText,
   Loader2,
   Mail,
@@ -19,13 +20,16 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { api, ApiError, type DocumentRow, type FolderStatus } from "../api/client";
+import { DeleteAllConfirm } from "../components/DeleteAllConfirm";
+import { FolderTree } from "../components/FolderTree";
+import { Pagination } from "../components/Pagination";
 import { button, buttonSecondary, errorText, input, label, muted, pageTitle, tableCell, tableHeader } from "../ui";
 import { UPLOAD_ACCEPT, UPLOAD_TYPES_TEXT, skippedMessage, splitSupportedFiles } from "../uploadTypes";
 
 const STATUSES = ["discovered", "converted", "summarized", "failed", "unsupported"];
 
-/** The list endpoint caps a page at 500 rows; the table sorts what it loaded. */
-const PAGE_LIMIT = 500;
+/** Rows per page unless the page-size menu says otherwise (the endpoint caps a page at 500). */
+const DEFAULT_PAGE_SIZE = 100;
 /** While any file is still being converted, the list refreshes on this interval. */
 const REFRESH_MS = 4000;
 
@@ -110,17 +114,6 @@ function formatAdded(iso: string | null): string {
   return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
-/** Rows with no value for the sorted column always go last, in either direction. */
-function compareRows(a: DocumentRow, b: DocumentRow, key: SortKey, dir: 1 | -1): number {
-  const av = a[key];
-  const bv = b[key];
-  if (av == null && bv == null) return 0;
-  if (av == null) return 1;
-  if (bv == null) return -1;
-  if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
-  return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: "base" }) * dir;
-}
-
 function SortHeader({
   name,
   sortKey,
@@ -164,12 +157,15 @@ export function Documents() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [sortKey, setSortKey] = useState<SortKey>("discovered_at");
   const [sortDir, setSortDir] = useState<1 | -1>(-1);
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [confirmingClear, setConfirmingClear] = useState(false);
+  const [confirmingDeleteAll, setConfirmingDeleteAll] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const [targetFolder, setTargetFolder] = useState("");
@@ -177,8 +173,12 @@ export function Documents() {
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // bumped whenever the files may have changed, so the folder tree reloads its open levels
+  const [treeKey, setTreeKey] = useState(0);
+
   const loadFolders = useCallback(() => {
     api.listFolders().then((r) => setFolders(r.folders)).catch(() => setFolders([]));
+    setTreeKey((k) => k + 1);
   }, []);
 
   useEffect(() => {
@@ -187,14 +187,33 @@ export function Documents() {
 
   const load = useCallback(() => {
     return api
-      .listDocuments({ folder: folder || undefined, status: status || undefined, q: search || undefined, limit: PAGE_LIMIT })
+      .listDocuments({
+        folder: folder || undefined,
+        status: status || undefined,
+        q: search || undefined,
+        limit: pageSize,
+        offset: page * pageSize,
+        sort: sortKey,
+        dir: sortDir === 1 ? "asc" : "desc",
+      })
       .then((r) => {
         setDocuments(r.documents);
         setTotal(r.total);
         setError(null);
       })
       .catch((err) => setError(err instanceof ApiError ? `${err.status}: ${err.message}` : String(err)));
-  }, [folder, status, search]);
+  }, [folder, status, search, page, pageSize, sortKey, sortDir]);
+
+  // a new filter, search, sort or page size starts again from the first page
+  useEffect(() => {
+    setPage(0);
+  }, [folder, status, search, pageSize, sortKey, sortDir]);
+
+  // deleting the last rows of the last page leaves it empty: step back
+  useEffect(() => {
+    const lastPage = Math.max(0, Math.ceil(total / pageSize) - 1);
+    if (page > lastPage) setPage(lastPage);
+  }, [total, pageSize, page]);
 
   useEffect(() => {
     const handle = setTimeout(() => void load(), 250);
@@ -209,10 +228,8 @@ export function Documents() {
     return () => clearInterval(timer);
   }, [hasPending, load]);
 
-  const rows = useMemo(
-    () => [...documents].sort((a, b) => compareRows(a, b, sortKey, sortDir)),
-    [documents, sortKey, sortDir],
-  );
+  // the server sorts and pages; the table shows exactly what it sent
+  const rows = documents;
 
   // Selection only counts rows that are still listed (a filter change or a delete drops the rest).
   const selectedIds = useMemo(() => documents.filter((d) => selected.has(d.id)).map((d) => d.id), [documents, selected]);
@@ -290,15 +307,42 @@ export function Documents() {
     }
   };
 
+  const handleDeleteAll = async () => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const r = await api.deleteMatching({ folder: folder || undefined, status: status || undefined, q: search || undefined });
+      setNotice(`Deleted ${r.deleted.toLocaleString()} ${r.deleted === 1 ? "file" : "files"}.`);
+      setSelected(new Set());
+      setConfirmingDeleteAll(false);
+      await load();
+      loadFolders();
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // what Delete all would hit, in words, for the confirmation
+  const deleteAllScope = [
+    folder && `in “${folder}”`,
+    status && `that are ${STATUS_CHIP[status]?.text ?? status}`,
+    search && `matching “${search}”`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   const changeFolder = (name: string) => {
     setFolder(name);
     setConfirmingClear(false);
+    setConfirmingDeleteAll(false);
   };
 
   // how many files the selected folder holds, for the confirmation
   const folderFileCount = folders.find((f) => f.name === folder)?.total_files;
 
-  const uploadTarget = (targetFolder || folder || folders[0]?.name || "").trim();
+  const uploadTarget = (targetFolder || folder.split("/")[0] || folders[0]?.name || "").trim();
 
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
@@ -401,21 +445,31 @@ export function Documents() {
         </button>
       </div>
 
-      <div className="mt-5 flex flex-wrap items-center gap-2">
+      <div className="mt-5 grid gap-5 lg:grid-cols-[250px_minmax(0,1fr)]">
+        <aside className="lg:sticky lg:top-20 lg:max-h-[calc(100vh-7rem)] lg:self-start lg:overflow-y-auto">
+          <FolderTree selected={folder} onSelect={changeFolder} refreshKey={treeKey} />
+        </aside>
+
+        <div className="min-w-0">
+      <div className="flex flex-wrap items-center gap-2">
         <input
           className={`${input} w-60`}
           placeholder="Search path, title or author"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <select className={input} value={folder} onChange={(e) => changeFolder(e.target.value)}>
-          <option value="">All folders</option>
-          {folders.map((f) => (
-            <option key={f.name} value={f.name}>
-              {f.name}
-            </option>
-          ))}
-        </select>
+        {folder && (
+          <button
+            type="button"
+            onClick={() => changeFolder("")}
+            title="Show all folders"
+            className={`${buttonSecondary} inline-flex max-w-xs items-center gap-1.5`}
+          >
+            <Folder size={12} className="shrink-0" />
+            <span className="truncate">{folder}</span>
+            <X size={12} className="shrink-0" />
+          </button>
+        )}
         <select className={input} value={status} onChange={(e) => setStatus(e.target.value)}>
           <option value="">Any status</option>
           {STATUSES.map((s) => (
@@ -424,7 +478,7 @@ export function Documents() {
             </option>
           ))}
         </select>
-        {folder && !confirmingClear && (
+        {folder && !folder.includes("/") && !confirmingClear && (
           <button
             type="button"
             onClick={() => setConfirmingClear(true)}
@@ -435,10 +489,32 @@ export function Documents() {
             <Trash2 size={12} /> Clear folder
           </button>
         )}
+        {total > 0 && !confirmingDeleteAll && (
+          <button
+            type="button"
+            onClick={() => setConfirmingDeleteAll(true)}
+            disabled={busy}
+            title="Delete every file the current filters match"
+            className={`${buttonSecondary} inline-flex items-center gap-1.5 hover:!border-[var(--danger)] hover:!text-[var(--danger)]`}
+          >
+            <Trash2 size={12} /> Delete all {total.toLocaleString()}
+          </button>
+        )}
         <span className={`font-mono ml-auto text-[11px] ${muted}`}>
           {total > documents.length ? `${documents.length} of ${total} files` : `${total} files`}
         </span>
       </div>
+
+      {confirmingDeleteAll && (
+        <DeleteAllConfirm
+          count={total}
+          scope={deleteAllScope}
+          requireTyping={!folder && !status && !search}
+          busy={busy}
+          onConfirm={() => void handleDeleteAll()}
+          onCancel={() => setConfirmingDeleteAll(false)}
+        />
+      )}
 
       {/* Confirmation for emptying a whole folder. */}
       {folder && confirmingClear && (
@@ -585,6 +661,12 @@ export function Documents() {
       </div>
 
       {documents.length === 0 && !error && <p className={`mt-4 ${muted}`}>No documents match.</p>}
+
+      {total > 0 && (
+        <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} onPageSize={setPageSize} />
+      )}
+        </div>
+      </div>
     </div>
   );
 }

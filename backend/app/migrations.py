@@ -123,6 +123,10 @@ _STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_chunks_search_vector ON chunks USING gin (search_vector)",
     "CREATE INDEX IF NOT EXISTS idx_files_meta_vector ON files USING gin (meta_vector)",
     "CREATE INDEX IF NOT EXISTS idx_chunks_file_id ON chunks (file_id)",
+    # latest job of a file and type (the Progress page asks this for every file)
+    "CREATE INDEX IF NOT EXISTS idx_jobs_file_type_id ON jobs (file_id, job_type, id DESC)",
+    # latest job of a file and type (the Progress page asks this for every file)
+    "CREATE INDEX IF NOT EXISTS idx_jobs_file_type_id ON jobs (file_id, job_type, id DESC)",
     "CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks USING hnsw (embedding vector_cosine_ops)",
 ]
 
