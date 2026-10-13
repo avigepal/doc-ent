@@ -77,6 +77,22 @@ _STATEMENTS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_report_notes_file_id ON report_notes (file_id)",
+    # Full reports over a big folder run in a worker, so they outlive the browser tab.
+    """
+    CREATE TABLE IF NOT EXISTS report_jobs (
+        id TEXT PRIMARY KEY,
+        state TEXT NOT NULL DEFAULT 'queued',
+        params JSONB NOT NULL DEFAULT '{}'::jsonb,
+        status_text TEXT NOT NULL DEFAULT '',
+        answer TEXT NOT NULL DEFAULT '',
+        sources JSONB NOT NULL DEFAULT '[]'::jsonb,
+        error TEXT,
+        history_id BIGINT,
+        cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
     # How the reply was produced ("keyword", "search", "chat", ...), so a
     # restored chat can label keyword matches apart from model answers.
     "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS route TEXT NOT NULL DEFAULT ''",

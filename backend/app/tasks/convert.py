@@ -9,14 +9,12 @@ can run; Docling already OCRs scanned PDFs inside convert_fast.
 """
 
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
 import httpx
 from celery import Task
-from celery.signals import worker_process_init
 
 from app.celery_app import celery_app
 from app.config import settings
@@ -31,30 +29,6 @@ from app.models import FileRecord, JobRecord
 logger = logging.getLogger(__name__)
 
 _email_archive = EmailArchiveBackend()
-
-
-@worker_process_init.connect
-def _warm_up_docling(**_) -> None:
-    """Load Docling's models when a converter worker process starts instead
-    of on the first file -- the first conversion otherwise pays the whole
-    model-load cost (tens of seconds, plus CUDA init), which is exactly the
-    delay a user sees after pressing upload. Opt-in per service via
-    WARM_UP_DOCLING=1 so api/summarize/etc. workers (which never run
-    Docling) don't spend memory on it. Best-effort: a failure here just
-    means the first file pays the cost, as before."""
-    if os.environ.get("WARM_UP_DOCLING") != "1":
-        return
-    try:
-        from docling.datamodel.base_models import InputFormat
-
-        from app.conversion.backends import docling_backend
-
-        docling_backend._get_converter().initialize_pipeline(InputFormat.PDF)
-        # warning level on purpose: Celery workers default to --loglevel=WARNING,
-        # so an info line would never show and you couldn't tell warm-up ran.
-        logger.warning("docling pipeline warmed up at worker start")
-    except Exception:
-        logger.warning("docling warm-up failed; first conversion will load models", exc_info=True)
 
 
 def _task_queue(task: Task) -> str | None:

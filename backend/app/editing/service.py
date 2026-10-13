@@ -34,7 +34,9 @@ from app.editing.engine import (
     EditResult,
     edit_document,
 )
+from app.editing.changes import describe_changes, save_changes
 from app.editing.docx_layout import edit_docx
+from app.editing.docx_ops import edit_docx_exact, wants_exact_edit
 from app.editing.docx_style import StyleResult, restyle_docx
 from app.editing.formats import (
     EditNotSupportedError,
@@ -48,7 +50,8 @@ from app.editing.formats import (
 from app.editing.layout import LayoutResult, LayoutUnsupported, needs_rebuild
 from app.editing.literal import parse_replacement
 from app.editing.pdf_layout import edit_pdf
-from app.editing.styling import looks_like_style
+from app.editing.request import split_request
+from app.editing.styling import mentions_style
 from app.handlers.registry import is_plain_text
 from app.history.store import edits_in_conversation, record_export
 from app.models import FileRecord
@@ -155,17 +158,18 @@ def _publish(session: Session, path: Path, fmt: str, shown: str, source_file_id:
         source_name=shown,
         source_file_id=source_file_id,
     )
-    return {
-        "event": "file",
-        "data": {
-            "id": export_id,
-            "name": path.name,
-            "fmt": fmt,
-            "size_bytes": path.stat().st_size,
-            "source": shown,
-            "download_path": f"/history/exports/{export_id}/download",
-        },
+    data = {
+        "id": export_id,
+        "name": path.name,
+        "fmt": fmt,
+        "size_bytes": path.stat().st_size,
+        "source": shown,
+        "download_path": f"/history/exports/{export_id}/download",
     }
+    changes = describe_changes(path) if fmt == "docx" else None
+    if changes:
+        data["changes"] = changes  # the dashboard lets the user accept or reject each one
+    return {"event": "file", "data": data}
 
 
 def _restyle_in_layout(
@@ -213,6 +217,41 @@ def _restyle_in_layout(
     return note
 
 
+def _style_note(result: StyleResult) -> str:
+    note = f"Changed the style ({result.summary})."
+    if result.skipped:
+        note += f" The file has no {', no '.join(result.skipped)}, so that part was skipped."
+    if result.ignored:
+        note += f" I couldn't apply: {', '.join(sorted(set(result.ignored)))}."
+    return note
+
+
+def _restyle_output(path: Path, fmt: str, style: str, llm: EditLLM, name: str) -> Iterator[dict]:
+    """The look-part of a request that also changed the words: restyle the file
+    just written (replaced in place, so there is still one result). Returns
+    (the path, a sentence for the reply, whether the style was applied). A style
+    that can't be applied never loses the wording change that was already made."""
+    if fmt != "docx":
+        return path, (
+            f" I can only change the styling of Word (.docx) files, so I left the look as it was ({style})."
+        ), False, []
+    tmp = path.with_name(f"{path.stem}.styling.docx")
+    result: StyleResult | None = None
+    try:
+        for update in restyle_docx(path, tmp, style, llm):
+            if isinstance(update, StyleResult):
+                result = update
+            else:
+                yield _status(f"{name}: {update.text}")
+        assert result is not None
+        tmp.replace(path)
+    except Exception as exc:
+        tmp.unlink(missing_ok=True)
+        logger.warning("styling %s after the edit failed", name, exc_info=True)
+        return path, f" I couldn't apply the style changes: {exc}.", False, []
+    return path, " " + _style_note(result), True, list(result.ops)
+
+
 def _edit_in_layout(
     session: Session,
     *,
@@ -225,6 +264,8 @@ def _edit_in_layout(
     shown: str,
     version: int,
     chained: bool,
+    style: str = "",
+    exact: bool = False,
 ) -> Iterator[dict]:
     """Edit `base` (a .docx or .pdf) in place. Yields status/file events and
     returns the note for the reply; raises LayoutUnsupported when the file
@@ -233,7 +274,7 @@ def _edit_in_layout(
     out_dir = Path(data_dir) / "outputs" / uuid.uuid4().hex
     out_dir.mkdir(parents=True, exist_ok=True)
     dst = out_dir / output_filename(Path(name).stem, fmt, version)
-    editor = edit_docx if fmt == "docx" else edit_pdf
+    editor = edit_docx_exact if exact else edit_docx if fmt == "docx" else edit_pdf
 
     result: LayoutResult | None = None
     try:
@@ -248,16 +289,28 @@ def _edit_in_layout(
         shutil.rmtree(out_dir, ignore_errors=True)
         raise
 
+    style_note = ""
+    style_ops: list = []
+    if style:
+        dst, style_note, _, style_ops = yield from _restyle_output(dst, fmt, style, llm, name)
+    if fmt == "docx" and result.changes:
+        # so each change can be accepted or rejected later (changes.py)
+        save_changes(dst, base, list(result.ops), list(result.changes), style_ops)
+
     yield _status(f"Saving {name}…")
     yield _publish(session, dst, fmt, shown, row.id)
 
-    if result.replaced:
+    if result.summary:
+        note = f"Edited **{shown}**: {result.summary}, keeping its layout, "
+    elif result.replaced:
         times = "once" if result.replacements == 1 else f"{result.replacements} times"
         note = f'Replaced "{result.replaced.old}" with "{result.replaced.new}" in **{shown}** ({times}), keeping its layout, '
     else:
         count = "one paragraph" if result.changed == 1 else f"{result.changed} paragraphs"
         note = f"Applied your changes to **{shown}** ({count}), keeping its layout, "
-    note += f"and saved the result as **{dst.name}**."
+    note += f"and saved the result as **{dst.name}**.{style_note}"
+    if result.skipped:
+        note += f" Not done: {'; '.join(result.skipped)}."
     if chained:
         note += " This continues from your previous edit; say “from the original” to start over."
     return note
@@ -314,8 +367,16 @@ def edit_events(
             version = len(earlier) + 1
             shown = Path(previous.record.stored_path).name if previous else name
 
+            # A request can change the words, the look, or both ("shorten the intro and make the
+            # headings dark blue"): split it, change the words first, then restyle the result.
+            text_instruction, style_instruction = instruction, ""
+            if parse_replacement(instruction) is None and mentions_style(instruction):
+                yield _status(f"{name}: Working out what to change…")
+                split = split_request(llm, instruction)
+                text_instruction, style_instruction = split.text, split.style
+
             # "make the headings blue", "use Arial": the look changes, the words don't.
-            if looks_like_style(instruction) and parse_replacement(instruction) is None:
+            if style_instruction and not text_instruction:
                 docx_base = None
                 if previous is not None and previous.record.fmt == "docx" and Path(previous.record.stored_path).exists():
                     docx_base = Path(previous.record.stored_path)
@@ -331,7 +392,7 @@ def edit_events(
                 note = yield from _restyle_in_layout(
                     session,
                     row=row,
-                    instruction=instruction,
+                    instruction=style_instruction,
                     llm=llm,
                     data_dir=data_dir,
                     base=docx_base,
@@ -348,7 +409,14 @@ def edit_events(
             native = {".docx": "docx", ".pdf": "pdf"}.get(Path(row.path).suffix.lower())
             if native and fmt == native and (previous is None or previous.kind == "layout"):
                 base = previous.path if previous else Path(row.path)
-                if parse_replacement(instruction) is None and needs_rebuild(instruction):
+                structural = needs_rebuild(text_instruction)
+                # Word: add, remove or change named parts exactly (docx_ops.py) instead of rewording every paragraph
+                exact = (
+                    fmt == "docx"
+                    and parse_replacement(instruction) is None
+                    and wants_exact_edit(text_instruction, structural)
+                )
+                if parse_replacement(instruction) is None and structural and not exact:
                     layout_note = (
                         "This change adds, removes or rearranges content, which can't be done inside the "
                         "original layout, so the result is a clean document."
@@ -359,13 +427,15 @@ def edit_events(
                             session,
                             row=row,
                             fmt=fmt,
-                            instruction=instruction,
+                            instruction=text_instruction,
                             llm=llm,
                             data_dir=data_dir,
                             base=base,
                             shown=shown,
                             version=version,
                             chained=previous is not None,
+                            style=style_instruction,
+                            exact=exact,
                         )
                         notes.append(note)
                         continue
@@ -380,7 +450,7 @@ def edit_events(
                 text = load_source_text(row, data_dir)
 
             result: EditResult | None = None
-            for update in edit_document(text, instruction, llm, structured=is_structured(fmt)):
+            for update in edit_document(text, text_instruction, llm, structured=is_structured(fmt)):
                 if isinstance(update, EditProgress):
                     yield _status(f"{name}: {update.text}")
                 else:
@@ -391,6 +461,13 @@ def edit_events(
             out_dir = Path(data_dir) / "outputs" / uuid.uuid4().hex
             path = write_output(result.text, fmt, out_dir, Path(name).stem, version=version)
             (out_dir / EDITED_TEXT_NAME).write_text(result.text, encoding="utf-8")
+            style_note = ""
+            if style_instruction:
+                path, style_note, styled, _ = yield from _restyle_output(path, fmt, style_instruction, llm, name)
+                if styled:
+                    # the file now looks different from its text: the next edit continues from the file itself
+                    (out_dir / EDITED_TEXT_NAME).unlink(missing_ok=True)
+                    (out_dir / LAYOUT_FLAG_NAME).write_text("1", encoding="utf-8")
             export_id = record_export(
                 session,
                 query_history_id=None,
@@ -420,6 +497,7 @@ def edit_events(
                 )
             else:
                 note = f"Applied your changes to **{shown}** and saved the result as **{path.name}**."
+            note += style_note
             if layout_note:
                 note += f" {layout_note}"
             if previous:

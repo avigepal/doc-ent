@@ -36,6 +36,11 @@ class LayoutResult:
     changed: int  # paragraphs / lines that were rewritten
     replaced: Replacement | None = None
     replacements: int = 0
+    # exact edits (docx_ops.py): what was done in words, and each change for the change list
+    summary: str = ""
+    changes: tuple = ()
+    skipped: tuple = ()  # what was asked for but could not be done, in words
+    ops: tuple = ()  # the operations the changes came from
 
 
 # Instructions that add, remove or rearrange things, not reword them.

@@ -68,6 +68,17 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 export const api = {
   health: () => request<{ status: string }>("/health"),
 
+  // Rebuilds an edited Word file with only the accepted changes (indices from its change list).
+  updateFileChanges: (fileId: number, accepted: number[]) =>
+    request<GeneratedFile>(`/history/exports/${fileId}/changes`, {
+      method: "POST",
+      body: JSON.stringify({ accepted }),
+    }),
+
+  // Stops a full report that is running in a worker (the Stop button).
+  cancelReportJob: (jobId: string) =>
+    request<{ stopping: boolean }>(`/report-jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" }),
+
   ingestScan: () =>
     request<{
       raw_dir: string;
@@ -173,6 +184,8 @@ export const api = {
       onRoute?: (route: { action: string; label: string }) => void;
       onStatus?: (text: string) => void;
       onFile?: (file: GeneratedFile) => void;
+      // a report over a big folder is running in a worker; it keeps going if the tab is closed
+      onJob?: (jobId: string) => void;
     } = {},
     // aborting stops reading, and the server stops generating when the connection closes
     signal?: AbortSignal,
@@ -239,6 +252,7 @@ export const api = {
         else if (eventName === "route") handlers.onRoute?.(data);
         else if (eventName === "status") handlers.onStatus?.(data.text);
         else if (eventName === "file") handlers.onFile?.(data);
+        else if (eventName === "job") handlers.onJob?.(data.job_id);
         else if (eventName === "done") handlers.onDone?.(data.history_id);
         else if (eventName === "error") throw new ApiError(500, data.message ?? "stream error");
       }
@@ -494,6 +508,19 @@ export interface GeneratedFile {
   size_bytes: number;
   source: string;
   download_path: string;
+  /** What an edit changed in a Word file, one entry per change, each of which can be accepted or rejected. */
+  changes?: FileChange[];
+}
+
+export interface FileChange {
+  index: number;
+  /** "replaced" | "inserted" | "deleted" | "cell" */
+  op: string;
+  /** Where it is, e.g. "paragraph 3" or "new heading after block 2". */
+  label: string;
+  before: string;
+  after: string;
+  accepted: boolean;
 }
 
 export interface QueryResult {

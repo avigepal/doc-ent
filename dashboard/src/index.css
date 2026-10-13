@@ -23,6 +23,11 @@
   --pdf-soft: #fbe4e1;
   --docx: #1d4f91;
   --docx-soft: #dbe7f7;
+  /* Ask-bar modes: Edit file violet, Full report teal (soft tint for the on-state fill) */
+  --edit: #6a3d9a;
+  --edit-soft: #ece3f6;
+  --report: #0f6b6b;
+  --report-soft: #d9eeee;
   /* syntax highlighting (code blocks in answers) */
   --code-keyword: #8a3b9a;
   --code-string: #3f6b46;
@@ -52,6 +57,14 @@
     --pdf-soft: #3a1a18;
     --docx: #8fb4f0;
     --docx-soft: #172540;
+  --edit: #c4a4ec;
+  --edit-soft: #2a1f3d;
+  --report: #6cc4c4;
+  --report-soft: #10302f;
+    --edit: #c4a4ec;
+    --edit-soft: #2a1f3d;
+    --report: #6cc4c4;
+    --report-soft: #10302f;
     --code-keyword: #c792ea;
     --code-string: #83b48a;
     --code-number: #e3a85e;
@@ -77,6 +90,10 @@
   --pdf-soft: #3a1a18;
   --docx: #8fb4f0;
   --docx-soft: #172540;
+  --edit: #c4a4ec;
+  --edit-soft: #2a1f3d;
+  --report: #6cc4c4;
+  --report-soft: #10302f;
   --code-keyword: #c792ea;
   --code-string: #83b48a;
   --code-number: #e3a85e;
@@ -125,74 +142,6 @@ body::before {
 
 .font-mono {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
-}
-
-/* Signature motion: a glowing segment runs continuously around the Ask
-   input's actual rectangular perimeter while a request is in flight — a
-   literal nod to document scanning, the one orchestrated animation on
-   the page. Two stacked <rect> strokes (a blurred "glow" layer underneath
-   a crisp "line" layer), both with pathLength="100" so stroke-dasharray/
-   dashoffset are simple percentages regardless of the input's real pixel
-   size, both looping via stroke-dashoffset. x/y/width/rx are set here as
-   CSS on the SVG geometry properties (not viewBox units) so the traced
-   rectangle always matches the input's real box and corner radius
-   exactly, at any width — a rotating conic-gradient (the first attempt
-   at this) spins around the element's CENTER instead, which for a wide
-   short input sweeps fast across the top/bottom and barely touches the
-   sides. Disabled for reduced-motion. */
-.ask-glow {
-  --glow-line-color: var(--index);
-  --glow-blur-color: var(--index);
-  --glow-line-thickness: 2px;
-  --glow-blur-size: 3px;
-  --glow-line-length: 22;
-  --glow-speed: 2600ms;
-  --glow-offset: 6px;
-}
-
-.ask-glow-container {
-  pointer-events: none;
-  position: absolute;
-  inset: calc(var(--glow-offset) / -2);
-  width: calc(100% + var(--glow-offset));
-  height: calc(100% + var(--glow-offset));
-  overflow: visible;
-}
-
-.ask-glow-blur,
-.ask-glow-line {
-  width: calc(100% - var(--glow-offset));
-  height: calc(100% - var(--glow-offset));
-  x: calc(var(--glow-offset) / 2);
-  y: calc(var(--glow-offset) / 2);
-  rx: 0.3rem;
-  fill: transparent;
-  stroke-dasharray: var(--glow-line-length) calc(100 - var(--glow-line-length));
-  animation: glow-run var(--glow-speed) linear infinite;
-}
-
-.ask-glow-line {
-  stroke: var(--glow-line-color);
-  stroke-width: var(--glow-line-thickness);
-}
-
-.ask-glow-blur {
-  filter: blur(var(--glow-blur-size));
-  stroke: var(--glow-blur-color);
-  stroke-width: var(--glow-blur-size);
-}
-
-@keyframes glow-run {
-  to {
-    stroke-dashoffset: -100;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ask-glow-blur,
-  .ask-glow-line {
-    animation: none;
-  }
 }
 
 /* Token colors emitted by rehype-highlight (highlight.js class names),

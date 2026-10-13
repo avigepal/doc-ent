@@ -11,6 +11,7 @@ celery_app.conf.task_routes = {
     # shares the correlate worker, which already reaches the embedding server
     "app.tasks.index.*": {"queue": "correlate"},
     "app.tasks.auto_ingest.*": {"queue": "auto_ingest"},
+    "app.tasks.report.*": {"queue": "report"},
 }
 
 # Queue names must match docker-compose.yml's celery-* service `-Q` flags.
@@ -29,4 +30,5 @@ import app.tasks.summarize  # noqa: E402,F401
 import app.tasks.correlate  # noqa: E402,F401
 import app.tasks.index  # noqa: E402,F401
 import app.tasks.auto_ingest  # noqa: E402,F401
+import app.tasks.report  # noqa: E402,F401
 import app.job_cleanup  # noqa: E402,F401

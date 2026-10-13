@@ -1,8 +1,8 @@
-import { CornerDownRight, Download, FileText, FileEdit, Library, Loader2, MessageSquare, ScrollText, Search, Sparkles, X } from "lucide-react";
+import { ChevronDown, ChevronRight, CornerDownRight, Download, FileText, FileEdit, Library, Loader2, MessageSquare, ScrollText, Search, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { buttonSecondary, card, label, muted } from "../ui";
-import type { GeneratedFile } from "../api/client";
+import type { FileChange, GeneratedFile } from "../api/client";
 import { useViewer } from "./DocumentViewer";
 import { Markdown } from "./Markdown";
 
@@ -224,9 +224,19 @@ function formatSize(bytes: number): string {
 /** A file the assistant made. It is saved automatically as soon as it is
  * ready; the button is only there to save it again (or if the browser
  * blocked the automatic download). */
-function GeneratedFileCard({ file, onDownload }: { file: GeneratedFile; onDownload?: (file: GeneratedFile) => void }) {
+function GeneratedFileCard({
+  file,
+  onDownload,
+  onReview,
+}: {
+  file: GeneratedFile;
+  onDownload?: (file: GeneratedFile) => void;
+  /** Rebuilds the file with only these changes (their indices). Without it the list is read-only. */
+  onReview?: (file: GeneratedFile, accepted: number[]) => Promise<void>;
+}) {
   return (
-    <div className="flex items-center gap-3 rounded border border-[var(--line)] bg-[var(--index-soft)] px-3 py-2.5">
+    <div className="rounded border border-[var(--line)] bg-[var(--index-soft)]">
+      <div className="flex items-center gap-3 px-3 py-2.5">
       <FileText size={18} className="shrink-0 text-[var(--index)]" />
       <div className="min-w-0 flex-1">
         <p className="truncate text-[14px] font-medium" title={file.name}>
@@ -247,6 +257,108 @@ function GeneratedFileCard({ file, onDownload }: { file: GeneratedFile; onDownlo
           <Download size={14} />
         </button>
       )}
+      </div>
+      {file.changes && file.changes.length > 0 && <ChangeList file={file} onReview={onReview} />}
+    </div>
+  );
+}
+
+const CHANGE_NAMES: Record<string, string> = {
+  replaced: "Changed",
+  inserted: "Added",
+  deleted: "Removed",
+  cell: "Changed",
+};
+
+/** What an edit changed, change by change: old text struck through, new text
+ * highlighted. Un-tick a change and press Update to get the file without it. */
+function ChangeList({
+  file,
+  onReview,
+}: {
+  file: GeneratedFile;
+  onReview?: (file: GeneratedFile, accepted: number[]) => Promise<void>;
+}) {
+  const changes = useMemo(() => file.changes ?? [], [file.changes]);
+  const saved = useMemo(() => changes.filter((c) => c.accepted).map((c) => c.index), [changes]);
+  const [open, setOpen] = useState(false);
+  const [accepted, setAccepted] = useState<number[]>(saved);
+  const [busy, setBusy] = useState(false);
+  // a rebuilt file brings a fresh list: start from what it says
+  useEffect(() => setAccepted(saved), [saved]);
+
+  const dirty = accepted.length !== saved.length || accepted.some((i) => !saved.includes(i));
+  const toggle = (change: FileChange) =>
+    setAccepted((now) => (now.includes(change.index) ? now.filter((i) => i !== change.index) : [...now, change.index]));
+
+  return (
+    <div className="border-t border-[var(--line)] px-3 py-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="inline-flex cursor-pointer items-center gap-1 text-xs font-medium text-[var(--index)] hover:opacity-80"
+      >
+        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        Review {changes.length} change{changes.length === 1 ? "" : "s"}
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2">
+          <ul className="space-y-2">
+            {changes.map((change) => (
+              <li key={change.index} className="rounded border border-[var(--line)] bg-[var(--paper)] p-2 text-[13px]">
+                <label className="flex cursor-pointer items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={accepted.includes(change.index)}
+                    disabled={!onReview || busy}
+                    onChange={() => toggle(change)}
+                    aria-label={`Keep this change: ${change.label}`}
+                    className="mt-0.5"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className={`block text-[11px] ${muted}`}>
+                      {CHANGE_NAMES[change.op] ?? "Changed"} · {change.label}
+                    </span>
+                    {change.before && (
+                      <span className="mt-1 block whitespace-pre-wrap break-words rounded bg-[color-mix(in_srgb,var(--danger)_14%,transparent)] px-1.5 py-0.5 text-[var(--danger)] line-through">
+                        {change.before}
+                      </span>
+                    )}
+                    {change.after && (
+                      <span className="mt-1 block whitespace-pre-wrap break-words rounded bg-[color-mix(in_srgb,var(--index)_14%,transparent)] px-1.5 py-0.5 text-[var(--ink)]">
+                        {change.after}
+                      </span>
+                    )}
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          {onReview && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={!dirty || busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    await onReview(file, accepted);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+                className={`${buttonSecondary} inline-flex items-center gap-1.5 disabled:cursor-not-allowed disabled:opacity-50`}
+              >
+                {busy && <Loader2 size={12} className="animate-spin" />} Update file
+              </button>
+              <span className={`text-[11px] ${muted}`}>
+                {dirty ? "Press Update, then download again." : "Un-tick a change to leave it out of the file."}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -258,6 +370,7 @@ export function ResultCard({
   pending = false,
   statusText,
   onDownloadFile,
+  onReviewChanges,
   route,
   stopped = false,
   suggestions,
@@ -284,6 +397,8 @@ export function ResultCard({
   statusText?: string;
   /** Saves a generated file again. */
   onDownloadFile?: (file: GeneratedFile) => void;
+  /** Rebuilds an edited file with only the accepted changes. */
+  onReviewChanges?: (file: GeneratedFile, accepted: number[]) => Promise<void>;
   /** True while this answer is still being generated: shows a loader instead
    * of an empty box and holds back the action buttons until it's done. */
   pending?: boolean;
@@ -376,7 +491,7 @@ export function ResultCard({
       {result.files && result.files.length > 0 && (
         <div className="mt-3 space-y-2">
           {result.files.map((file) => (
-            <GeneratedFileCard key={file.id} file={file} onDownload={onDownloadFile} />
+            <GeneratedFileCard key={file.id} file={file} onDownload={onDownloadFile} onReview={onReviewChanges} />
           ))}
         </div>
       )}

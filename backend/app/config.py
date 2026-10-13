@@ -69,21 +69,28 @@ class Settings(BaseSettings):
     report_subject_max_files: int = 300
     report_confirm_above: int = 20
     report_seconds_per_call: int = 20
+    # A report over a big folder runs in the celery-report worker, so it outlives the browser tab. If no
+    # worker picks it up within report_queue_wait_seconds it is run inside the request instead.
+    report_background: bool = True
+    report_queue_wait_seconds: int = 45
 
-    # Docling (PDF/Office conversion) speed vs. fidelity -- see
-    # app/conversion/backends.py. Defaults match Docling's own.
+    # Docling (PDF/Office conversion) runs in its own docling-serve, like the
+    # llama-servers: this project only sends it files over HTTP (see
+    # app/conversion/backends.py and docker-compose.docling.yml).
+    # docling_url: where that server is (this machine or a remote Linux box).
+    # docling_api_key: its DOCLING_SERVE_API_KEY; empty when it has none.
+    # docling_timeout: seconds one file may take (big scans are slow).
     # docling_ocr: OCR text inside images/scans. Off = faster, but scanned
     #   pages and screenshots-in-PDFs come out with no text.
     # docling_tables: rebuild table structure. Off = faster, but tables
     #   come out as plain text.
     # docling_table_mode: "fast" or "accurate" (slower, better on complex tables).
-    # docling_page_batch_size: pages the models process per batch; 0 =
-    #   Docling's default (4). Raise it (8, 16) to use the GPU better, as
-    #   far as VRAM allows.
+    docling_url: str = "http://host.docker.internal:5001"
+    docling_api_key: str = ""
+    docling_timeout: float = 900.0
     docling_ocr: bool = True
     docling_tables: bool = True
     docling_table_mode: str = "fast"
-    docling_page_batch_size: int = 0
 
     # Chunks sent to the embedding server per request while indexing.
     # Bigger = fewer round trips, until the server's batch/slot limits.

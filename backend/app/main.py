@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import engine, get_session
 from app.queue_guard import UPLOAD_QUEUE
+from app.search.report_runner import report_refine_stream as _report_refine_stream
+from app.search.report_runner import report_stream as _report_stream
 from app.pipeline_runner import (
     run_convert_enqueue,
     register_files,
@@ -242,73 +244,6 @@ def _attachment_names(session: Session, file_ids: list[int] | None) -> list[str]
     return [Path(p).name for p in paths]
 
 
-def _report_limits():
-    from app.search.report import ReportLimits
-
-    return ReportLimits(
-        batch_chars=settings.report_batch_chars,
-        max_files=settings.report_max_files,
-        max_chars=settings.report_max_chars,
-        notes_chars=settings.report_notes_chars,
-        parallel=settings.report_parallel,
-    )
-
-
-def _report_scope(session: Session, payload: "QuestionRequest", request: str, confirmed: bool):
-    """Generator: status events, then returns the ReportScope -- which documents a
-    full report reads (see app/search/report_scope.py). With nothing to read (a
-    direct chat has no documents) the report events say so instead of the model chatting."""
-    from app.search.report_scope import resolve_report_scope
-    from app.tasks.correlate import _raw_dir, _text_llm
-
-    return resolve_report_scope(
-        session,
-        raw_dir=_raw_dir,
-        request=request,
-        folders=payload.folders,
-        author=payload.author,
-        title=payload.title,
-        file_ids=payload.file_ids,
-        chat_only=payload.chat_only,
-        llm=_text_llm,
-        limits=_report_limits(),
-        subject_max_files=settings.report_subject_max_files,
-        confirm_above=settings.report_confirm_above,
-        seconds_per_call=settings.report_seconds_per_call,
-        confirmed=confirmed,
-    )
-
-
-def _report_stream(session: Session, payload: "QuestionRequest"):
-    """Events for a full report: every passage of the files in the request's
-    scope is read, not just the best matches (in a folder too big for that, the
-    passages that mention the subject of the request). Notes saved by an earlier
-    report on the same request are reused. For a big folder the first answer is
-    a plan (how many documents, how long) and the report waits for confirmation."""
-    from app.search.report import _nothing_to_report, report_events
-    from app.search.report_notes import DbNotesStore
-    from app.tasks.correlate import _text_llm
-
-    scope = yield from _report_scope(session, payload, payload.question, payload.confirm_report)
-    if scope.nothing:
-        yield from _nothing_to_report(scope.nothing)
-    elif scope.plan:
-        yield {
-            "event": "route",
-            "data": {"action": "report_plan", "label": "", "query": payload.question, "source": "user"},
-        }
-        yield from _nothing_to_report(scope.plan)
-    else:
-        yield from report_events(
-            payload.question,
-            scope.documents,
-            _text_llm,
-            scope.limits,
-            DbNotesStore(session),
-            scope.prompt_extra,
-        )
-
-
 def _report_followup(session: Session, payload: "QuestionRequest") -> tuple[str, str] | None:
     """(the original report request, the latest report text) when this message
     is a change to the report this chat just produced ("make it shorter")."""
@@ -318,22 +253,6 @@ def _report_followup(session: Session, payload: "QuestionRequest") -> tuple[str,
     if payload.chat_only or payload.mode == "report" or not looks_like_report_refinement(payload.question):
         return None
     return report_context(session, payload.conversation_id, payload.before_history_id)
-
-
-def _report_refine_stream(session: Session, payload: "QuestionRequest", request: str, previous_report: str):
-    """The same report notes (saved ones, so nothing is read again) with the new instruction applied."""
-    from app.search.report import _nothing_to_report, refine_events
-    from app.search.report_notes import DbNotesStore
-    from app.tasks.correlate import _text_llm
-
-    # the report being changed was already confirmed, so the same documents are read again, without asking
-    scope = yield from _report_scope(session, payload, request, True)
-    if scope.nothing:
-        yield from _nothing_to_report(scope.nothing)
-    else:
-        yield from refine_events(
-            request, payload.question, previous_report, scope.documents, _text_llm, scope.limits, DbNotesStore(session)
-        )
 
 
 def _catalog_answer(session: Session, payload: "QuestionRequest", raw_dir: str) -> dict | None:
@@ -397,6 +316,18 @@ def query_endpoint(payload: QuestionRequest, session: Session = Depends(get_sess
     return {**result, "history_id": history_id}
 
 
+@app.post("/report-jobs/{job_id}/cancel", dependencies=[Depends(require_bearer_token)])
+def cancel_report_job(job_id: str, session: Session = Depends(get_session)) -> dict:
+    """Stops a full report running in a worker (the dashboard's Stop button): at once
+    if it has not started, else at its next check."""
+    from app.search.report_jobs import DbJobStore
+
+    store = DbJobStore(session)
+    if store.get(job_id) is None:
+        raise HTTPException(status_code=404, detail="No such report job")
+    return {"stopping": store.request_cancel(job_id)}
+
+
 @app.post("/query/stream", dependencies=[Depends(require_bearer_token)])
 def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(get_session)) -> StreamingResponse:
     """SSE variant of /query: the main answer streams token-by-token as
@@ -423,6 +354,7 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
         extra = {"cross_doc": None, "statistical": None}
         export_ids: list[int] = []
         route_action = ""
+        recorded_id: int | None = None  # set when a worker already saved the report to History
 
         def sse(evt: dict) -> str:
             return f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
@@ -568,11 +500,18 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
                     extra = evt["data"]
                 elif evt["event"] == "route":
                     route_action = evt["data"]["action"]  # e.g. a report that turned into a plan
+                elif evt["event"] == "recorded":
+                    recorded_id = evt["data"]["history_id"]
+                    continue  # bookkeeping for this endpoint, not for the client
                 elif evt["event"] == "file":
                     export_ids.append(evt["data"]["id"])
                 yield sse(evt)
         except Exception as exc:
             yield f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"
+            return
+
+        if recorded_id is not None:
+            yield f"event: done\ndata: {json.dumps({'history_id': recorded_id})}\n\n"
             return
 
         result = {
@@ -1063,6 +1002,33 @@ def history_export_download_endpoint(
         media_type=_EXPORT_MEDIA_TYPES.get(record.fmt, "application/octet-stream"),
         filename=path.name,
     )
+
+
+class AcceptedChanges(BaseModel):
+    accepted: list[int]
+
+
+@app.post("/history/exports/{export_id}/changes", dependencies=[Depends(require_bearer_token)])
+def history_export_changes_endpoint(
+    export_id: int, payload: AcceptedChanges, session: Session = Depends(get_session)
+) -> dict:
+    """Review an edited Word file: rebuild it from the original with only the accepted
+    changes (indices from the file's change list), in place, and return the file card."""
+    from app.editing.changes import ChangesUnavailable, apply_accepted
+    from app.history.serialization import generated_file_to_dict
+    from app.history.store import get_export
+
+    record = get_export(session, export_id)
+    path = Path(record.stored_path) if record else None
+    if record is None or path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="no such file")
+    try:
+        apply_accepted(path, payload.accepted)
+    except ChangesUnavailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    record.size_bytes = path.stat().st_size
+    session.commit()
+    return generated_file_to_dict(record)
 
 
 @app.get("/files/sections", dependencies=[Depends(require_bearer_token)])

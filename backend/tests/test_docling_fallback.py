@@ -1,31 +1,50 @@
 from pathlib import Path
-from types import SimpleNamespace
 
-from docling.datamodel.base_models import ConversionStatus
+import httpx
+import pytest
 
-from app.conversion.backends import DoclingBackend
+from app.conversion.backends import DoclingBackend, DoclingServerError
 
 
 class FakeConverter:
-    """Stands in for docling's DocumentConverter."""
+    """One reader on the fake docling server: answers a request with fixed markdown."""
 
-    def __init__(self, markdown: str, status=ConversionStatus.SUCCESS, pages: int = 3):
+    def __init__(self, markdown: str, status: str = "success", pages: int = 3):
         self.markdown = markdown
         self.status = status
         self.pages = pages
         self.calls = 0
 
-    def convert(self, _path: str):
+    def reply(self) -> httpx.Response:
         self.calls += 1
-        document = SimpleNamespace(export_to_markdown=lambda: self.markdown, pages=list(range(self.pages)))
-        return SimpleNamespace(status=self.status, document=document)
+        document = {"md_content": self.markdown, "json_content": {"pages": {str(n): {} for n in range(self.pages)}}}
+        return httpx.Response(200, json={"status": self.status, "document": document})
 
 
-def _backend(primary: FakeConverter, pdfium: FakeConverter) -> DoclingBackend:
-    backend = DoclingBackend()
-    backend._converter = primary
-    backend._pdfium_converter = pdfium
-    return backend
+class FakeServer:
+    """Stands in for docling-serve: tells the readers apart by the request's form
+    fields, the way the real server does (default reader, pypdfium2, whole-page OCR)."""
+
+    def __init__(self, primary, pdfium, ocr):
+        self.primary, self.pdfium, self.ocr = primary, pdfium, ocr
+
+    def post(self, url, data, files, headers):
+        if data.get("force_ocr") == "true":
+            return self.ocr.reply()
+        if data.get("pdf_backend") == "pypdfium2":
+            return self.pdfium.reply()
+        return self.primary.reply()
+
+
+@pytest.fixture(autouse=True)
+def _files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for name in ("a.pdf", "report.docx"):
+        Path(name).write_bytes(b"x")
+
+
+def _backend(primary: FakeConverter, pdfium: FakeConverter, ocr: FakeConverter | None = None) -> DoclingBackend:
+    return DoclingBackend(client=FakeServer(primary, pdfium, ocr or FakeConverter("")))
 
 
 def test_a_good_docling_result_is_used_as_is_without_the_fallback():
@@ -39,7 +58,7 @@ def test_a_good_docling_result_is_used_as_is_without_the_fallback():
 
 def test_an_empty_docling_result_falls_back_to_the_pdfium_reader():
     # docling-parse "Page N failed to parse": nothing extracted, status partial
-    primary = FakeConverter("", status=ConversionStatus.PARTIAL_SUCCESS, pages=0)
+    primary = FakeConverter("", status="partial_success", pages=0)
     pdfium = FakeConverter("## Recovered text", pages=3)
 
     result = _backend(primary, pdfium).convert(Path("a.pdf"))
@@ -50,7 +69,7 @@ def test_an_empty_docling_result_falls_back_to_the_pdfium_reader():
 
 
 def test_a_partial_result_is_replaced_when_the_fallback_has_more_text():
-    primary = FakeConverter("one page only", status=ConversionStatus.PARTIAL_SUCCESS)
+    primary = FakeConverter("one page only", status="partial_success")
     pdfium = FakeConverter("one page only, plus the other pages that failed to parse")
 
     result = _backend(primary, pdfium).convert(Path("a.pdf"))
@@ -59,7 +78,7 @@ def test_a_partial_result_is_replaced_when_the_fallback_has_more_text():
 
 
 def test_the_original_is_kept_when_the_fallback_finds_no_more_text():
-    primary = FakeConverter("some text", status=ConversionStatus.PARTIAL_SUCCESS)
+    primary = FakeConverter("some text", status="partial_success")
     pdfium = FakeConverter("")
 
     result = _backend(primary, pdfium).convert(Path("a.pdf"))
@@ -69,7 +88,7 @@ def test_the_original_is_kept_when_the_fallback_finds_no_more_text():
 
 
 def test_non_pdf_files_never_use_the_pdf_fallback():
-    primary = FakeConverter("", status=ConversionStatus.PARTIAL_SUCCESS)
+    primary = FakeConverter("", status="partial_success")
     pdfium = FakeConverter("text")
 
     result = _backend(primary, pdfium).convert(Path("report.docx"))
@@ -140,16 +159,14 @@ def test_the_cleaner_result_wins_even_when_it_is_shorter():
 
 def test_a_fallback_that_is_no_cleaner_is_not_used():
     primary, pdfium, ocr = FakeConverter(GARBLED), FakeConverter(GARBLED * 2), FakeConverter(GARBLED)
-    backend = _backend(primary, pdfium)
-    backend._ocr_converter = ocr
+    backend = _backend(primary, pdfium, ocr)
 
     assert backend.convert(Path("a.pdf")).engine == "docling"
 
 
 def test_pages_are_read_as_images_when_neither_reader_gives_text():
     primary, pdfium, ocr = FakeConverter(GARBLED), FakeConverter(GARBLED), FakeConverter(CLEAN)
-    backend = _backend(primary, pdfium)
-    backend._ocr_converter = ocr
+    backend = _backend(primary, pdfium, ocr)
 
     result = backend.convert(Path("a.pdf"))
 
@@ -158,8 +175,7 @@ def test_pages_are_read_as_images_when_neither_reader_gives_text():
 
 def test_ocr_is_not_run_when_a_reader_already_gave_clean_text():
     primary, pdfium, ocr = FakeConverter(GARBLED), FakeConverter(CLEAN), FakeConverter("never used")
-    backend = _backend(primary, pdfium)
-    backend._ocr_converter = ocr
+    backend = _backend(primary, pdfium, ocr)
 
     backend.convert(Path("a.pdf"))
 
@@ -170,3 +186,42 @@ def test_clean_text_never_triggers_a_retry():
     primary, pdfium = FakeConverter(CODE), FakeConverter(CLEAN)
     _backend(primary, pdfium).convert(Path("a.pdf"))
     assert pdfium.calls == 0
+
+
+# ---------- talking to the server ----------
+
+
+def test_the_request_goes_to_the_configured_server_with_the_api_key(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "docling_url", "http://gpu-box:5001/")
+    monkeypatch.setattr(settings, "docling_api_key", "secret")
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return FakeConverter("# Real text").reply()
+
+    backend = DoclingBackend(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    result = backend.convert(Path("report.docx"))
+
+    assert result.markdown == "# Real text" and result.engine_metadata["page_count"] == 3
+    assert str(seen[0].url) == "http://gpu-box:5001/v1/convert/file"
+    assert seen[0].headers["x-api-key"] == "secret"
+
+
+def test_an_unreachable_server_is_a_clear_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    backend = DoclingBackend(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(DoclingServerError, match="unreachable"):
+        backend.convert(Path("report.docx"))
+
+
+def test_a_rejected_api_key_is_a_clear_error():
+    backend = DoclingBackend(
+        client=httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(401)))
+    )
+    with pytest.raises(DoclingServerError, match="API key"):
+        backend.convert(Path("report.docx"))

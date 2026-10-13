@@ -23,8 +23,8 @@ export function Login() {
         onSubmit={handleSubmit}
         className="w-full max-w-sm rounded-lg border border-[var(--line)] p-7 shadow-[0_1px_0_var(--line)]"
       >
-        <h1 className="font-display text-center text-xl font-semibold tracking-tight">
-          DOC<span className="text-[var(--index)]">·</span>ENT
+        <h1 className="font-display text-center text-xl font-semibold tracking-tight text-[var(--edit)]">
+          DOC<span className="text-[var(--locator)]">·</span>ENT
         </h1>
 
         {/* The field has no visible label, so it carries one for screen readers. */}

@@ -38,9 +38,9 @@ export function Header() {
         <Link
           to="/"
           aria-label="Docent — go to Ask"
-          className="font-display text-base font-semibold tracking-[0.16em] text-[var(--ink)] no-underline transition-opacity hover:opacity-75 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--index)] lg:text-lg"
+          className="font-display text-base font-semibold tracking-[0.16em] text-[var(--edit)] no-underline transition-opacity hover:opacity-75 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--index)] lg:text-lg"
         >
-          DOC<span className="text-[var(--index)]">·</span>ENT
+          DOC<span className="text-[var(--locator)]">·</span>ENT
         </Link>
       </div>
 

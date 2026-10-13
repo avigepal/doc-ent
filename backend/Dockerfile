@@ -44,30 +44,17 @@ WORKDIR /app
 # cache and the install target are on different filesystems.
 ENV UV_LINK_MODE=copy
 
-# torch is by far the heaviest dependency (~2-3 GB with its CUDA libraries;
-# the converters get a GPU, see docker-compose.yml). It gets its own layer,
-# ahead of requirements.txt: editing requirements.txt then reinstalls only
-# what changed instead of torch all over again. The resolver sees torch
-# already satisfied when docling asks for it below.
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system torch torchvision
-
 COPY backend/requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system -r requirements.txt
 
-# A C compiler for Triton, PyTorch's GPU kernel compiler: the first time a
-# Docling model runs on CUDA it JIT-builds a small C launcher and fails with
-# "Failed to find C compiler" on a slim image. Placed after the pip layers
-# so adding it doesn't invalidate the multi-GB torch/requirements layers.
-#
 # fonts-noto-core: glyphs for Devanagari (Hindi), Arabic, Thai, Tamil and
 # other scripts, so a PDF made by the edit feature ("translate to Hindi, as a
 # PDF") doesn't render as empty boxes -- the base fonts only cover Latin.
 # Chinese/Japanese/Korean would need fonts-noto-cjk (~60 MB more).
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev fonts-noto-core
+    apt-get update && apt-get install -y --no-install-recommends fonts-noto-core
 
 COPY backend/app ./app
 COPY --from=dashboard-build /dashboard/dist /app/dashboard_dist

@@ -38,7 +38,7 @@ def generated_file_to_dict(record: Any) -> dict[str, Any]:
     """The shape the dashboard's file card uses (same as the "file" event of
     a live reply), so a restored chat shows the same card."""
     name = record.stored_path.replace("\\", "/").rsplit("/", 1)[-1]
-    return {
+    data = {
         "id": record.id,
         "name": name,
         "fmt": record.fmt,
@@ -46,6 +46,15 @@ def generated_file_to_dict(record: Any) -> dict[str, Any]:
         "source": record.source_name or "",
         "download_path": f"/history/exports/{record.id}/download",
     }
+    if record.fmt == "docx":
+        from pathlib import Path
+
+        from app.editing.changes import describe_changes
+
+        changes = describe_changes(Path(record.stored_path))
+        if changes:
+            data["changes"] = changes  # a restored chat can still review the edit
+    return data
 
 
 def query_record_to_detail(record: Any, files: list[Any] | None = None) -> dict[str, Any]:

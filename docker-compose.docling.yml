@@ -1,0 +1,33 @@
+# The Docling server -- the only place Docling's models load. Run it on whichever
+# machine has the NVIDIA GPU (needs the NVIDIA Container Toolkit), the same way
+# llama-server runs outside the main stack:
+#
+#   DOCLING_SERVE_API_KEY=<long random key> docker compose -f docker-compose.docling.yml up -d
+#
+# This stack's .env then points at it:
+#   DOCLING_URL=http://host.docker.internal:5001    (same machine)
+#   DOCLING_URL=http://<server>:5001                (remote Linux server)
+#   DOCLING_API_KEY=<the same key>
+# Files are sent to this server, so reach a remote one over a VPN, an SSH tunnel
+# or an HTTPS reverse proxy. For a machine without a GPU use the
+# docling-serve-cpu image and delete the `deploy:` block.
+services:
+  docling-serve:
+    image: quay.io/docling-project/docling-serve-cu124:latest
+    restart: always
+    ports:
+      - "5001:5001"
+    environment:
+      DOCLING_SERVE_API_KEY: ${DOCLING_SERVE_API_KEY:-}
+      # one file may take this long (seconds); the default is 2 minutes
+      DOCLING_SERVE_MAX_SYNC_WAIT: "900"
+      # pages the layout/table/OCR models process at once (Docling's default is 4);
+      # raise it (8, 16) to keep the GPU busier, as far as VRAM allows
+      DOCLING_PERF_PAGE_BATCH_SIZE: ${DOCLING_PERF_PAGE_BATCH_SIZE:-4}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${DOC_GPU_ID:-0}"]  # as shown by `nvidia-smi`
+              capabilities: [gpu]

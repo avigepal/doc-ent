@@ -52,6 +52,17 @@ _ASKING = re.compile(
 )
 
 
+def mentions_style(message: str) -> bool:
+    """True when the message says anything about the look of the document, even
+    next to a change of wording ("shorten the intro and make the headings blue").
+    Questions are left out. Cheap, so a request that has no style in it never
+    costs a model call to find that out."""
+    text = message.strip()
+    if _ASKING.search(text):
+        return False
+    return bool(_STYLE_WORDS.search(text) or (_COLOR_NAME.search(text) and _PART_OF_DOCUMENT.search(text)))
+
+
 def looks_like_style(message: str) -> bool:
     """True when the message asks for a different look rather than different words."""
     text = message.strip()

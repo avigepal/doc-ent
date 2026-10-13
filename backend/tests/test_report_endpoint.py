@@ -48,6 +48,7 @@ def client(monkeypatch):
     monkeypatch.setattr(store, "link_exports", MagicMock())
     import app.search.report_scope as report_scope
 
+    monkeypatch.setattr(settings, "report_background", False)  # the job path is tested in test_report_jobs.py
     # the folder is small, so the report reads it in full (narrowing to a subject is tested in test_report_scope.py)
     monkeypatch.setattr(report_scope, "count_scope_files", lambda session, conditions: 2)
     monkeypatch.setattr(main, "_attachment_names", lambda session, ids: [])
@@ -258,4 +259,69 @@ def test_confirming_the_plan_reads_the_documents_that_mention_the_subject(client
     assert "".join(d["text"] for n, d in events if n == "token") == "The full report."
     reads = sum(1 for kind, system in client.llm.calls if kind == "chat" and system == report.MAP_SYSTEM_PROMPT)
     assert reads == 30
+    assert client.record_query.call_args.kwargs["route"] == "report"
+
+
+class _JobStore:
+    """report_jobs in memory: `finish_with` is what the worker would have produced."""
+
+    def __init__(self, session, finish_with=None):
+        from app.search.report_jobs import JobView, QUEUED
+
+        self.job = JobView("j1", QUEUED, {})
+        self.finish_with = finish_with
+
+    def create(self, params):
+        self.params = params
+        return "j1"
+
+    def get(self, job_id):
+        from app.search.report_jobs import JobView
+
+        if self.finish_with:
+            return JobView("j1", "done", {}, "", self.finish_with, ["/a.pdf"], None, 55)
+        return JobView(**self.job.__dict__)
+
+    def cancel_if_queued(self, job_id):
+        self.job.state = "cancelled"
+        return True
+
+
+def _background(monkeypatch, store):
+    import app.search.report_runner as runner
+    import app.tasks.report as tasks
+
+    monkeypatch.setattr(settings, "report_background", True)
+    monkeypatch.setattr(settings, "report_queue_wait_seconds", 0)
+    monkeypatch.setattr(runner, "DbJobStore", lambda session: store)
+    queued = []
+    monkeypatch.setattr(tasks.run_report_job, "apply_async", lambda args, queue: queued.append((args, queue)))
+    return queued
+
+
+def test_a_confirmed_report_over_a_big_folder_runs_in_a_worker_and_is_not_recorded_twice(client, monkeypatch):
+    _big_folder(monkeypatch)
+    store = _JobStore(None, finish_with="The worker's report.")
+    queued = _background(monkeypatch, store)
+
+    events = _post(client, question="everything about Asha Rao", mode="report", folders=["big"], confirm_report=True)
+
+    assert queued == [(["j1"], "report")]
+    assert store.params["question"] == "everything about Asha Rao" and store.params["confirm_report"] is True
+    assert dict(events)["job"] == {"job_id": "j1"}
+    assert "".join(d["text"] for n, d in events if n == "token") == "The worker's report."
+    assert events[-1] == ("done", {"history_id": 55})  # the id the worker saved it under
+    client.record_query.assert_not_called()
+    assert not any(n == "recorded" for n, _ in events)
+
+
+def test_a_report_nobody_picks_up_is_run_in_the_request(client, monkeypatch):
+    _big_folder(monkeypatch)
+    store = _JobStore(None)  # stays queued: no worker
+    _background(monkeypatch, store)
+
+    events = _post(client, question="everything about Asha Rao", mode="report", folders=["big"], confirm_report=True)
+
+    assert store.job.state == "cancelled"
+    assert "".join(d["text"] for n, d in events if n == "token") == "The full report."
     assert client.record_query.call_args.kwargs["route"] == "report"

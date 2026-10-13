@@ -25,12 +25,22 @@ This isn't just "the compose file should work" — it was actually built and run
 
 ```bash
 cp .env.example .env
-docker compose build api          # multi-stage: Node builds the dashboard, then the Python/Docling image
+docker compose build api          # multi-stage: Node builds the dashboard, then the Python image
 docker compose up -d postgres redis flower api
 ```
 
-Confirmed working: the image builds clean (Docling's full dependency tree
-included, ~5 min build); `postgres`/`redis`/`flower`/`api` all start and
+**Docling server** (PDF/Office conversion). Docling is not part of this image: it
+runs as its own server, like llama-server, and the app only sends it files. Start
+`docker-compose.docling.yml` on whichever machine has the NVIDIA GPU (this one or
+a remote Linux box), then set `DOCLING_URL` (and `DOCLING_API_KEY`) in `.env`:
+
+```bash
+DOCLING_SERVE_API_KEY=<long random key> docker compose -f docker-compose.docling.yml up -d
+```
+
+Local and remote differ only in that URL.
+
+Confirmed working: the image builds clean; `postgres`/`redis`/`flower`/`api` all start and
 stay up; `init.sql` actually ran (`files`/`jobs`/`chunks` tables exist);
 `/health` responds; the dashboard serves at `/` **and** on a direct
 client-side route like `/ask` (not just the root — see the SPA-fallback
@@ -301,7 +311,7 @@ doesn't need pgvector/embeddings populated, only a live text llama-server.
 Reuses the exact same conversion backends as ingestion (Docling/plaintext/
 email), just run synchronously against a temp file instead of being
 queued. Conversion + chunking logic is unit-tested without needing
-Docling installed, see `test_adhoc_upload.py`.
+a Docling server, see `test_adhoc_upload.py`.
 
 ### Phase 5: export a summary to PDF
 

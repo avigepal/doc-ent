@@ -1,20 +1,16 @@
 import {
-  AlertCircle,
   Check,
   Copy,
   Download,
   FileEdit,
-  FileText,
   GitCompare,
   Loader2,
   RefreshCw,
   ScrollText,
   Sparkles,
   Square,
-  Trash2,
   Upload,
   X,
-  type LucideIcon,
 } from "lucide-react";
 import {
   useEffect,
@@ -36,34 +32,13 @@ import {
   type GeneratedFile,
   type QueryHistoryDetail,
   type QueryResult,
-  type UploadStage,
 } from "../api/client";
+import { ModeToggle } from "../components/ModeToggle";
+import { AttachmentTray, STAGE_LABEL, isPending, type Attachment } from "../components/AttachmentTray";
 import { ResultCard, shortenSource } from "../components/ResultCard";
-import { formatElapsed, useNow } from "../time";
+import { UPLOAD_ACCEPT, UPLOAD_TYPES_TEXT, skippedMessage, splitSupportedFiles } from "../uploadTypes";
+import { useNow } from "../time";
 import { button, buttonSecondary, errorText, formatButton, glass, input, muted } from "../ui";
-
-/** A file attached to the current chat (the upload button). Questions in the
- * chat search only these; a new chat clears them. */
-type Attachment = {
-  id: number;
-  name: string;
-  stage: UploadStage;
-  detail: string | null;
-  /** When the file was attached (ms since epoch), for the elapsed-time readout. */
-  addedAt: number;
-};
-
-const PENDING_STAGES: UploadStage[] = ["queued", "converting", "indexing"];
-const isPending = (a: Attachment) => PENDING_STAGES.includes(a.stage);
-
-const STAGE_LABEL: Record<UploadStage, string> = {
-  queued: "Queued",
-  converting: "Converting",
-  indexing: "Indexing",
-  ready: "Ready",
-  failed: "Failed",
-  unsupported: "Unsupported",
-};
 
 /** Replies that get related questions underneath: answers and reports from the
  * documents (not keyword listings, direct chats, file edits or library lookups). */
@@ -104,39 +79,6 @@ function saveAttachments(conversationId: string, list: Attachment[]) {
   } catch {
     // storage unavailable (private mode, quota) — attachments just won't survive a refresh
   }
-}
-
-function AttachmentChip({ attachment, onRemove }: { attachment: Attachment; onRemove: () => void }) {
-  const pending = isPending(attachment);
-  const bad = attachment.stage === "failed" || attachment.stage === "unsupported";
-  const now = useNow(pending);
-  return (
-    <span
-      title={bad ? `${attachment.name} — ${attachment.detail ?? STAGE_LABEL[attachment.stage]}` : attachment.name}
-      className={`inline-flex max-w-[280px] items-center gap-1.5 rounded border px-2 py-1 text-xs ${
-        bad ? "border-[var(--danger)] text-[var(--danger)]" : "border-[var(--line)] text-[var(--ink)]"
-      }`}
-    >
-      <FileText size={13} className="shrink-0" />
-      <span className="truncate">{attachment.name}</span>
-      {pending && (
-        <span className={`font-mono flex shrink-0 items-center gap-1 text-[10px] ${muted}`}>
-          <Loader2 size={11} className="animate-spin" /> {STAGE_LABEL[attachment.stage]} ·{" "}
-          {formatElapsed(now - attachment.addedAt)}
-        </span>
-      )}
-      {attachment.stage === "ready" && <Check size={12} className="shrink-0 text-[var(--signal)]" />}
-      {bad && <AlertCircle size={12} className="shrink-0" />}
-      <button
-        type="button"
-        onClick={onRemove}
-        aria-label={`Remove ${attachment.name}`}
-        className="shrink-0 cursor-pointer text-[var(--ink-soft)] hover:text-[var(--ink)]"
-      >
-        <X size={12} />
-      </button>
-    </span>
-  );
 }
 
 /** What the next question will search, right above the input: the sidebar's
@@ -201,46 +143,6 @@ function ScopeBar({
       )}
       {trailing && <span className="ml-auto">{trailing}</span>}
     </div>
-  );
-}
-
-/** Switches the next message to a full report: every document in scope is read
- * and a complete report is written, whatever the message says. It needs
- * something to read, so it is unavailable in a direct chat. */
-function ModeToggle({
-  label,
-  Icon,
-  help,
-  on,
-  disabled,
-  disabledReason,
-  onToggle,
-}: {
-  label: string;
-  Icon: LucideIcon;
-  help: string;
-  on: boolean;
-  disabled: boolean;
-  disabledReason: string;
-  onToggle: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      disabled={disabled}
-      aria-pressed={on && !disabled}
-      aria-label={label}
-      title={disabled ? disabledReason : help}
-      // a compact chip, sized like the other buttons on the line above the input
-      className={`inline-flex shrink-0 items-center gap-1.5 rounded border px-2.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-        on && !disabled
-          ? "cursor-pointer border-[var(--index)] bg-[var(--index-soft)] font-medium text-[var(--index)]"
-          : "cursor-pointer border-[var(--line)] text-[var(--ink-soft)] hover:border-[var(--index)] hover:text-[var(--index)]"
-      }`}
-    >
-      <Icon size={13} aria-hidden="true" /> {label}
-    </button>
   );
 }
 
@@ -403,6 +305,8 @@ export function Ask() {
   const [loading, setLoading] = useState(false);
   // Cancels the reply being streamed (the Stop button, or Escape in the input).
   const abortRef = useRef<AbortController | null>(null);
+  // The report job a worker is running for the reply being streamed (Stop cancels it too).
+  const jobIdRef = useRef<string | null>(null);
   const questionRef = useRef<HTMLTextAreaElement>(null);
   const [downloading, setDownloading] = useState<{ id: string; fmt: "pdf" | "docx" } | null>(null);
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
@@ -565,11 +469,16 @@ export function Ask() {
 
   const handleFilesPicked = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
-    const files = Array.from(fileList);
+    const { supported: files, skipped } = splitSupportedFiles(Array.from(fileList));
     if (fileInputRef.current) fileInputRef.current.value = "";
+    // dropped files bypass the picker's filter, so unsupported ones are left out here
+    if (files.length === 0) {
+      setUploadError(skippedMessage(skipped));
+      return;
+    }
 
     setUploading(true);
-    setUploadError(null);
+    setUploadError(skipped.length > 0 ? skippedMessage(skipped) : null);
     try {
       const r = await api.uploadFiles(files);
       if (r.file_ids.length === 0) {
@@ -616,6 +525,7 @@ export function Ask() {
       setThread((prev) => prev.map((t) => (t.id === entryId ? { ...t, stopped: true, statusText: undefined } : t)));
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
+      jobIdRef.current = null;
     }
   };
 
@@ -672,6 +582,9 @@ export function Ask() {
         },
         onStatus: (text) =>
           setThread((prev) => prev.map((t) => (t.id === entryId ? { ...t, statusText: text } : t))),
+        onJob: (jobId) => {
+          jobIdRef.current = jobId;
+        },
         // a file the assistant created: show its card and save it right away
         onFile: (file) => {
           setThread((prev) =>
@@ -720,9 +633,31 @@ export function Ask() {
     }
   };
 
-  const handleStop = () => abortRef.current?.abort();
+  const handleStop = () => {
+    abortRef.current?.abort();
+    // a report running in a worker would carry on without the tab, so tell it to stop
+    const jobId = jobIdRef.current;
+    jobIdRef.current = null;
+    if (jobId) void api.cancelReportJob(jobId).catch(() => {});
+  };
 
   // Browsers may ask before the first automatic download; the file card's button covers that.
+  // Rebuilds an edited file with only the changes the user kept, and swaps the new card in.
+  const reviewChanges = async (entryId: string, file: GeneratedFile, accepted: number[]) => {
+    try {
+      const updated = await api.updateFileChanges(file.id, accepted);
+      setThread((prev) =>
+        prev.map((t) =>
+          t.id === entryId
+            ? { ...t, result: { ...t.result, files: (t.result.files ?? []).map((f) => (f.id === updated.id ? updated : f)) } }
+            : t,
+        ),
+      );
+    } catch (err) {
+      setError(err instanceof ApiError ? `${err.status}: ${err.message}` : "Couldn't update the file.");
+    }
+  };
+
   const saveGeneratedFile = (file: GeneratedFile) => {
     downloadGeneratedFile(file).catch((err) =>
       setError(err instanceof ApiError ? `${err.status}: ${err.message}` : "Couldn't save the generated file."),
@@ -983,8 +918,9 @@ export function Ask() {
     <div className="flex items-center gap-1.5">
       <ModeToggle
         label="Edit file"
+        tone="edit"
         Icon={FileEdit}
-        help="Change the attached file as your message says and get a new file to download"
+        help="Change the attached file as your message says (its wording, its look, or both) and get a new file to download"
         on={editMode && hasFiles}
         disabled={!hasFiles || busy}
         disabledReason={busy ? "Wait for the current reply to finish" : "Attach a file to edit"}
@@ -995,6 +931,7 @@ export function Ask() {
       />
       <ModeToggle
         label="Full report"
+        tone="report"
         Icon={ScrollText}
         help="Read every passage of the documents in scope and write a complete report (takes longer than a normal answer)"
         on={reportMode && hasDocuments}
@@ -1048,6 +985,7 @@ export function Ask() {
                 suggestionsDisabled={busy}
                 onSuggestion={index === thread.length - 1 ? (text) => askInSameScope(entry.id, text) : undefined}
                 onDownloadFile={saveGeneratedFile}
+                onReviewChanges={(file, accepted) => reviewChanges(entry.id, file, accepted)}
                 actions={
                   <>
                     {entry.route === "report_plan" && (
@@ -1167,23 +1105,12 @@ export function Ask() {
             </div>
           )}
           {attachments.length > 0 && !dragging && (
-            <div className="mb-2 flex flex-wrap items-center gap-1.5">
-              {attachments.map((a) => (
-                <AttachmentChip key={a.id} attachment={a} onRemove={() => removeAttachment(a.id)} />
-              ))}
-              <button
-                type="button"
-                onClick={clearAttachments}
-                className="inline-flex cursor-pointer items-center gap-1 rounded border border-[var(--line)] px-2 py-1 text-xs text-[var(--ink-soft)] transition-colors hover:border-[var(--danger)] hover:text-[var(--danger)]"
-              >
-                <Trash2 size={12} /> Clear all
-              </button>
-              <span className={`text-[11px] ${muted}`}>
-                Questions search only these files · a new chat clears them
-              </span>
-              {/* right end of this line, opposite the note */}
-              <span className="ml-auto">{reportToggle}</span>
-            </div>
+            <AttachmentTray
+              attachments={attachments}
+              onRemove={removeAttachment}
+              onClearAll={clearAttachments}
+              trailing={reportToggle}
+            />
           )}
           {!dragging && <AttachmentNotes attachments={attachments} />}
           {uploadError && !dragging && <p className={`mb-2 text-xs ${errorText}`}>{uploadError}</p>}
@@ -1193,6 +1120,7 @@ export function Ask() {
               ref={fileInputRef}
               type="file"
               multiple
+              accept={UPLOAD_ACCEPT}
               className="hidden"
               onChange={(e) => handleFilesPicked(e.target.files)}
             />
@@ -1200,18 +1128,18 @@ export function Ask() {
               type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
-              title="Attach files to this chat — they're cleared when you start a new chat"
+              title={`Attach files to this chat (${UPLOAD_TYPES_TEXT}) — they're cleared when you start a new chat`}
               className="flex h-[42px] w-[42px] shrink-0 cursor-pointer items-center justify-center rounded-md border border-[var(--line)] hover:border-[var(--index)] hover:text-[var(--index)] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {uploading ? <Loader2 size={18} className="animate-spin" /> : <Upload size={18} />}
             </button>
-            <div className="ask-glow relative flex-1">
+            <div className="relative flex-1">
               <textarea
                 ref={questionRef}
                 rows={1}
                 placeholder={
                   editMode && hasFiles
-                    ? "How should the file change? e.g. Replace 2023 with 2024"
+                    ? "What should change? e.g. Shorten the intro and make the headings dark blue"
                     : reportMode && hasDocuments
                     ? "What should the report cover? e.g. Everything about this person"
                     : attachments.length > 0
@@ -1228,12 +1156,6 @@ export function Ask() {
                 style={{ paddingTop: 10, paddingBottom: 10 }}
                 className={`${input} block min-h-[42px] w-full resize-none leading-[1.4]`}
               />
-              {busy && (
-                <svg className="ask-glow-container">
-                  <rect pathLength="100" className="ask-glow-blur" />
-                  <rect pathLength="100" className="ask-glow-line" />
-                </svg>
-              )}
             </div>
             {busy ? (
               <button

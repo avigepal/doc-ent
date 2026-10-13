@@ -190,3 +190,26 @@ class ExportHistoryRecord(Base):
     source_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_file_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ReportJobRecord(Base):
+    """A full report over a big folder, run by a worker (app/search/report_jobs.py)
+    so it keeps going when the browser closes. `params` is what the request
+    asked for; `status_text` is the progress shown while it runs; the finished
+    report is also recorded in query_history (`history_id`)."""
+
+    __tablename__ = "report_jobs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    # queued -> running -> done | failed | cancelled
+    state: Mapped[str] = mapped_column(String, nullable=False, default="queued")
+    params: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    answer: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    sources: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    history_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+

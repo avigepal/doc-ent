@@ -20,6 +20,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { api, ApiError, type DocumentRow, type FolderStatus } from "../api/client";
 import { button, buttonSecondary, errorText, input, label, muted, pageTitle, tableCell, tableHeader } from "../ui";
+import { UPLOAD_ACCEPT, UPLOAD_TYPES_TEXT, skippedMessage, splitSupportedFiles } from "../uploadTypes";
 
 const STATUSES = ["discovered", "converted", "summarized", "failed", "unsupported"];
 
@@ -301,8 +302,13 @@ export function Documents() {
 
   const handleFiles = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
-    const files = Array.from(fileList);
+    const { supported: files, skipped } = splitSupportedFiles(Array.from(fileList));
     if (fileInputRef.current) fileInputRef.current.value = "";
+    // dropped files bypass the picker's filter, so unsupported ones are left out here
+    if (files.length === 0) {
+      setError(skippedMessage(skipped));
+      return;
+    }
     if (!uploadTarget) {
       setError("Choose a folder (or type a new folder name) to put the files in first.");
       return;
@@ -313,7 +319,8 @@ export function Documents() {
     try {
       const r = await api.uploadDocuments(uploadTarget, files);
       setNotice(
-        `Added ${r.uploaded.length} ${r.uploaded.length === 1 ? "file" : "files"} to “${r.folder}”. They are being processed.`,
+        `Added ${r.uploaded.length} ${r.uploaded.length === 1 ? "file" : "files"} to “${r.folder}”. They are being processed.` +
+          (skipped.length > 0 ? ` ${skippedMessage(skipped)}` : ""),
       );
       await load();
       loadFolders();
@@ -379,6 +386,7 @@ export function Documents() {
           ref={fileInputRef}
           type="file"
           multiple
+          accept={UPLOAD_ACCEPT}
           className="hidden"
           onChange={(e) => void handleFiles(e.target.files)}
         />
@@ -386,6 +394,7 @@ export function Documents() {
           type="button"
           onClick={() => fileInputRef.current?.click()}
           disabled={uploading}
+          title={`Supported: ${UPLOAD_TYPES_TEXT}`}
           className={`${button} inline-flex items-center gap-1.5`}
         >
           {uploading ? <Loader2 size={13} className="animate-spin" /> : <UploadCloud size={13} />} Choose files
