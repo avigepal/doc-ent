@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     search_top_k: int = 12
     # A detailed answer ("in detail", "tell me everything about ...") is planned as sections and written
     # one section per model call (app/search/sectioned.py), when the sources are at least this long.
+    # Reranker (llama-server --reranking). Empty URL = no reranking. When set, search fetches
+    # rerank_candidates passages, the reranker scores each against the question (at most
+    # rerank_passage_chars of it), and the best k are kept. See app/search/rerank_client.py.
+    llama_rerank_url: str = ""
+    llama_rerank_model: str = "local"
+    llama_rerank_api_key: str = ""
+    rerank_candidates: int = 40
+    rerank_passage_chars: int = 3000
+    rerank_timeout_s: float = 30.0
     sectioned_answers: bool = True
     sectioned_min_chars: int = 6000
 

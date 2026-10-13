@@ -21,6 +21,7 @@ from app.config import settings
 from app.models import ChunkRecord, FileRecord
 from app.search.folder_filter import build_folder_like_patterns
 from app.search.hybrid import Candidate, build_or_tsquery, fuse
+from app.search.rerank_client import candidates_wanted, get_reranker, rerank_keep_best
 from app.search.retrieval import RetrievedChunk
 
 # Each side fetches more than k so fusion has overlap to work with.
@@ -96,7 +97,10 @@ def retrieve_top_k(
     Filters combine with AND; omitting all of them searches everything.
     """
     conditions = file_filter_conditions(raw_dir, folders, author, title, file_ids)
-    pool = max(k * _CANDIDATE_MULTIPLIER, _MIN_CANDIDATES)
+    # with a reranker, search hands it more passages than will be kept (it then picks the best k)
+    reranker = get_reranker() if query_text else None
+    wanted = candidates_wanted(k, reranker)
+    pool = max(k * _CANDIDATE_MULTIPLIER, _MIN_CANDIDATES, wanted)
     distance = ChunkRecord.embedding.cosine_distance(query_embedding)
     columns = (ChunkRecord.id, ChunkRecord.text, ChunkRecord.heading, FileRecord.path, distance.label("distance"))
 
@@ -138,7 +142,9 @@ def retrieve_top_k(
         )
         keyword_hits = _to_candidates(session.execute(keyword_query).all())
 
+    fused = fuse(vector_hits, keyword_hits, wanted)
+    if wanted > k:
+        fused = rerank_keep_best(query_text or "", fused, k, reranker, lambda item: (item[0].heading, item[0].text))
     return [
-        RetrievedChunk(file_path=c.file_path, heading=c.heading, text=c.text, score=score)
-        for c, score in fuse(vector_hits, keyword_hits, k)
+        RetrievedChunk(file_path=c.file_path, heading=c.heading, text=c.text, score=score) for c, score in fused[:k]
     ]
