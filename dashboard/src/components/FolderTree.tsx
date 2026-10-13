@@ -128,7 +128,7 @@ export function FolderTree({
   };
 
   return (
-    <nav aria-label="Folders" className="rounded border border-[var(--line)] p-2">
+    <nav aria-label="Folders" className="rounded border border-[var(--line)] bg-[var(--surface)] p-2">
       <div role="tree">
         <button
           type="button"

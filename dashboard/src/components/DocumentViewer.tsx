@@ -187,7 +187,7 @@ function Viewer({ target, onClose }: { target: ViewTarget; onClose: () => void }
         aria-modal="true"
         aria-label={data ? `Document: ${data.name}` : "Document"}
         onClick={(e) => e.stopPropagation()}
-        className="flex h-full w-full max-w-xl flex-col border-l border-[var(--line)] bg-[var(--paper)] shadow-xl"
+        className="flex h-full w-full max-w-xl flex-col border-l border-[var(--line)] bg-[var(--surface)] shadow-xl"
       >
         <header className="flex items-start justify-between gap-4 border-b border-[var(--line)] px-5 py-3">
           <div className="min-w-0">

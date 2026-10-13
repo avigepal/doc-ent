@@ -387,7 +387,7 @@ export function Progress() {
         {toasts.map((t) => (
           <div
             key={t.id}
-            className="flex items-center gap-2 rounded border border-[var(--signal)] bg-[var(--paper)] px-3 py-2.5 shadow-lg"
+            className="flex items-center gap-2 rounded border border-[var(--signal)] bg-[var(--surface)] px-3 py-2.5 shadow-lg"
           >
             <CheckCircle2 size={16} className="shrink-0 text-[var(--signal)]" aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate" title={t.text}>

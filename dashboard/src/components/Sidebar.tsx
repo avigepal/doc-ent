@@ -45,7 +45,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
         aria-modal="true"
         aria-labelledby="help-title"
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md rounded-lg border border-[var(--line)] bg-[var(--paper)] p-5 shadow-xl"
+        className="w-full max-w-md rounded-lg border border-[var(--line)] bg-[var(--surface)] p-5 shadow-xl"
       >
         <div className="flex items-start justify-between gap-4">
           <h2 id="help-title" className="font-display text-base font-semibold tracking-tight">
@@ -126,7 +126,7 @@ function NewFolderModal({ onClose, onCreate }: { onClose: () => void; onCreate: 
         aria-labelledby="new-folder-title"
         onSubmit={submit}
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-sm rounded-lg border border-[var(--line)] bg-[var(--paper)] p-5 shadow-xl"
+        className="w-full max-w-sm rounded-lg border border-[var(--line)] bg-[var(--surface)] p-5 shadow-xl"
       >
         <div className="flex items-start justify-between gap-4">
           <h2 id="new-folder-title" className="font-display text-base font-semibold tracking-tight">
@@ -156,7 +156,7 @@ function NewFolderModal({ onClose, onCreate }: { onClose: () => void; onCreate: 
           onChange={(e) => setName(e.target.value)}
           placeholder="e.g. contracts"
           disabled={creating}
-          className="mt-1.5 w-full rounded border border-[var(--line)] bg-[var(--paper)] px-2.5 py-1.5 text-[14px] text-[var(--ink)] placeholder:text-[var(--ink-soft)] focus:border-[var(--index)] focus:outline-none disabled:opacity-60"
+          className="mt-1.5 w-full rounded border border-[var(--line)] bg-[var(--surface)] px-2.5 py-1.5 text-[14px] text-[var(--ink)] placeholder:text-[var(--ink-soft)] focus:border-[var(--index)] focus:outline-none disabled:opacity-60"
         />
         {error && <p className={`mt-2 ${errorText}`}>{error}</p>}
         <div className="mt-5 flex justify-end gap-2">

@@ -107,7 +107,7 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   };
 
   return (
-    <div className="overflow-hidden rounded border border-[var(--line)] bg-[var(--locator-soft)]">
+    <div className="overflow-hidden rounded border border-[var(--line)] bg-[var(--surface)]">
       <div className="flex items-center justify-between border-b border-[var(--line)] px-3 py-1">
         <span className="font-mono text-[11px] tracking-wider text-[var(--ink-soft)] uppercase">
           {language ?? "code"}
@@ -188,7 +188,7 @@ function buildComponents(
   // Fenced blocks arrive as <pre><code>; inline code is a bare <code>.
   pre: ({ node: _n, children }: P<"pre">) => <CodeBlock>{children}</CodeBlock>,
   code: ({ node: _n, ...rest }: P<"code">) => (
-    <code {...rest} className={rest.className ? rest.className : "font-mono rounded-sm bg-[var(--locator-soft)] px-1 py-px text-[0.85em]"} />
+    <code {...rest} className={rest.className ? rest.className : "font-mono rounded-sm bg-[var(--soft)] px-1 py-px text-[0.85em] text-[var(--code-inline)]"} />
   ),
   };
 }

@@ -8,7 +8,7 @@
 // per-page.
 
 export const input =
-  "rounded border border-[var(--line)] bg-[var(--paper)] px-2.5 py-1.5 text-[14px] text-[var(--ink)] placeholder:text-[var(--ink-soft)] focus:border-[var(--index)] focus:outline-none transition-colors";
+  "rounded border border-[var(--line)] bg-[var(--surface)] px-2.5 py-1.5 text-[14px] text-[var(--ink)] placeholder:text-[var(--ink-soft)] focus:border-[var(--index)] focus:outline-none transition-colors";
 
 export const button =
   "rounded bg-[var(--index)] px-3 py-1.5 text-[14px] font-medium text-[var(--paper)] hover:opacity-90 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 transition-opacity";
@@ -41,10 +41,10 @@ export const formatButtonFor = (fmt: string): string => {
 export const glass = "bg-[var(--paper)]/68 backdrop-blur-md";
 
 export const card =
-  "rounded border border-[var(--line)] bg-[var(--paper)] p-4";
+  "rounded border border-[var(--line)] bg-[var(--surface)] p-4";
 
 export const tile =
-  "rounded border border-[var(--line)] bg-[var(--paper)] px-4 py-3";
+  "rounded border border-[var(--line)] bg-[var(--surface)] px-4 py-3";
 
 export const tableHeader =
   "font-mono text-[12px] uppercase tracking-wider text-[var(--ink-soft)] text-left font-normal py-2 pr-4 border-b border-[var(--line)]";

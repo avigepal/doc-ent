@@ -157,7 +157,7 @@ function SourcesModal({
         aria-modal="true"
         aria-labelledby="sources-title"
         onClick={(e) => e.stopPropagation()}
-        className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-lg border border-[var(--line)] bg-[var(--paper)] p-5 shadow-xl"
+        className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-lg border border-[var(--line)] bg-[var(--surface)] p-5 shadow-xl"
       >
         <div className="flex items-start justify-between gap-4">
           <h2 id="sources-title" className="font-display text-base font-semibold tracking-tight">
@@ -252,7 +252,7 @@ function GeneratedFileCard({
           onClick={() => onDownload(file)}
           title="Download again"
           aria-label={`Download ${file.name} again`}
-          className="inline-flex shrink-0 cursor-pointer items-center rounded border border-[var(--line)] bg-[var(--paper)] p-1.5 text-[var(--ink-soft)] transition-colors hover:border-[var(--index)] hover:text-[var(--index)]"
+          className="inline-flex shrink-0 cursor-pointer items-center rounded border border-[var(--line)] bg-[var(--surface)] p-1.5 text-[var(--ink-soft)] transition-colors hover:border-[var(--index)] hover:text-[var(--index)]"
         >
           <Download size={14} />
         </button>
@@ -306,7 +306,7 @@ function ChangeList({
         <div className="mt-2 space-y-2">
           <ul className="space-y-2">
             {changes.map((change) => (
-              <li key={change.index} className="rounded border border-[var(--line)] bg-[var(--paper)] p-2 text-[13px]">
+              <li key={change.index} className="rounded border border-[var(--line)] bg-[var(--surface)] p-2 text-[13px]">
                 <label className="flex cursor-pointer items-start gap-2">
                   <input
                     type="checkbox"

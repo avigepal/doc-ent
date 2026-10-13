@@ -7,11 +7,15 @@
   for that (paper, ink, index, locator) rather than generic ui-* names.
 */
 :root {
-  --paper: #f2f1ed;
-  --ink: #16181d;
-  /* secondary text: kept above 7:1 on --paper so small labels stay readable */
-  --ink-soft: #45484f;
-  --line: #d8d5cc;
+  /* flat neutral theme: the page is --paper, cards / inputs / dialogs sit on --surface,
+     --soft is the fill for hovers and inline code */
+  --paper: #fcfcfb;
+  --surface: #ffffff;
+  --soft: #f0f0ef;
+  --ink: #111111;
+  --ink-soft: #626462;
+  --line: #e3e3e2;
+  --code-inline: #9a3a1c;
   --index: #2b3a67;
   --index-soft: #dce1ee;
   --locator: #8f5514;
@@ -45,10 +49,13 @@
    header toggle (html[data-theme="dark"]). Keep the two blocks identical. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --paper: #15171b;
-    --ink: #ece9e2;
-    --ink-soft: #b3b5bb;
-    --line: #2b2e34;
+    --paper: #151515;
+    --surface: #1a1a19;
+    --soft: #20201f;
+    --ink: #fcfcfb;
+    --ink-soft: #a6a6a5;
+    --line: #2d2d2d;
+    --code-inline: #ec7e7e;
     --index: #8ea0e0;
     --index-soft: #1f2740;
     --locator: #e3a85e;
@@ -82,10 +89,13 @@
 }
 
 :root[data-theme="dark"] {
-  --paper: #15171b;
-  --ink: #ece9e2;
-  --ink-soft: #b3b5bb;
-  --line: #2b2e34;
+  --paper: #151515;
+  --surface: #1a1a19;
+  --soft: #20201f;
+  --ink: #fcfcfb;
+  --ink-soft: #a6a6a5;
+  --line: #2d2d2d;
+  --code-inline: #ec7e7e;
   --index: #8ea0e0;
   --index-soft: #1f2740;
   --locator: #e3a85e;
@@ -120,28 +130,6 @@ body {
   background: var(--paper);
   color: var(--ink);
   font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-}
-
-/* The page background: a soft wash of the app's own tints (index blue on the
-   left, amber locator on the right) fading out down the page, plus a barely
-   visible paper grain. The colors are the theme's soft tints (--index-soft,
-   --locator-soft), so it follows light and dark by itself. It is static and sits on its own fixed layer behind
-   everything, so it costs nothing and never moves under text; cards, tables and
-   the header are solid and sit on top of it. Pages leave their own background
-   off (no bg-[var(--paper)] on the page wrapper) so this shows through. */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.2'/%3E%3C/svg%3E"),
-    radial-gradient(ellipse 62% 58% at 32% 0%, var(--index-soft), transparent 70%),
-    radial-gradient(ellipse 52% 52% at 90% 0%, var(--locator-soft), transparent 70%),
-    radial-gradient(ellipse 70% 38% at 62% 100%, color-mix(in srgb, var(--index-soft) 80%, transparent), transparent 72%);
-  /* the grain (top layer) is blended into the colors under it; the washes are plain */
-  background-blend-mode: soft-light, normal, normal, normal;
 }
 
 .font-display {

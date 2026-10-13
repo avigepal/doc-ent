@@ -165,7 +165,7 @@ export function CitationNumber({
             role="tooltip"
             style={{ ...placement, width: CARD_WIDTH, maxWidth: `calc(100vw - ${CARD_MARGIN * 2}px)` }}
             // not interactive, so moving the pointer off the badge simply closes it
-            className="pointer-events-none fixed z-40 rounded border border-[var(--line)] bg-[var(--paper)] p-3 text-left shadow-lg"
+            className="pointer-events-none fixed z-40 rounded border border-[var(--line)] bg-[var(--surface)] p-3 text-left shadow-lg"
           >
             <p className="flex items-center gap-1.5 text-[13px] font-medium text-[var(--ink)]">
               <FileText size={13} className="shrink-0 text-[var(--ink-soft)]" aria-hidden="true" />
