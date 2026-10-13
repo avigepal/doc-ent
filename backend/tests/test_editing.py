@@ -184,9 +184,11 @@ def test_output_format_keeps_the_files_own_format_and_falls_back_to_docx(name, m
     assert output_format(name, mime) == expected
 
 
-def test_spreadsheets_are_not_supported_yet():
-    with pytest.raises(EditNotSupportedError):
-        output_format("sheet.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+def test_spreadsheets_come_back_as_xlsx_even_when_another_format_is_asked_for():
+    xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert output_format("sheet.xlsx", xlsx_mime) == "xlsx"
+    assert output_format("old.xls", "application/vnd.ms-excel") == "xlsx"
+    assert output_format("sheet.xlsx", xlsx_mime, requested="pdf") == "xlsx"
 
 
 def test_only_data_formats_are_structured():

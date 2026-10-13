@@ -17,6 +17,7 @@ import logging
 import re
 import shutil
 import subprocess
+import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,7 @@ from app.editing.docx_layout import edit_docx
 from app.editing.docx_ops import edit_docx_exact, wants_exact_edit
 from app.editing.docx_style import StyleResult, restyle_docx
 from app.editing.formats import (
+    SPREADSHEET_EXTENSIONS,
     EditNotSupportedError,
     is_structured,
     output_filename,
@@ -51,6 +53,7 @@ from app.editing.layout import LayoutResult, LayoutUnsupported, needs_rebuild
 from app.editing.literal import parse_replacement
 from app.editing.pdf_layout import edit_pdf
 from app.editing.request import split_request
+from app.editing.xlsx_ops import XlsxResult, edit_xlsx
 from app.editing.styling import mentions_style
 from app.handlers.registry import is_plain_text
 from app.history.store import edits_in_conversation, record_export
@@ -316,6 +319,75 @@ def _edit_in_layout(
     return note
 
 
+def _spreadsheet_base(row: FileRecord, previous: "Previous | None") -> Path | None:
+    """The Excel file this edit starts from, or None when it isn't a spreadsheet edit: the earlier
+    result when the chat is already editing one, else the uploaded .xlsx / .xls."""
+    if previous is not None:
+        if previous.record.fmt == "xlsx" and previous.path.exists():
+            return previous.path
+        return None
+    path = Path(row.path)
+    return path if path.suffix.lower() in SPREADSHEET_EXTENSIONS else None
+
+
+def _edit_spreadsheet(
+    session: Session,
+    *,
+    row: FileRecord,
+    instruction: str,
+    llm: EditLLM,
+    data_dir: str,
+    base: Path,
+    shown: str,
+    version: int,
+    chained: bool,
+) -> Iterator[dict]:
+    """Edit an Excel file cell by cell with exact operations (xlsx_ops.py). An old .xls is converted
+    to .xlsx first. Yields status/file events and returns the note for the reply."""
+    name = Path(row.path).name
+    out_dir = Path(data_dir) / "outputs" / uuid.uuid4().hex
+    out_dir.mkdir(parents=True, exist_ok=True)
+    dst = out_dir / output_filename(Path(name).stem, "xlsx", version)
+    scratch: Path | None = None
+    result: XlsxResult | None = None
+    try:
+        source = base
+        if base.suffix.lower() == ".xls":
+            from app.conversion.legacy_office import convert_with_libreoffice
+
+            yield _status(f"{name}: Converting the old .xls to .xlsx first")
+            scratch = Path(tempfile.mkdtemp(prefix="xls-edit-"))
+            copy = scratch / base.name
+            shutil.copyfile(base, copy)
+            source = convert_with_libreoffice(copy, "xlsx", scratch)
+        for update in edit_xlsx(source, dst, instruction, llm):
+            if isinstance(update, XlsxResult):
+                result = update
+            else:
+                yield _status(f"{name}: {update.text}")
+        assert result is not None
+        # the next edit in this chat continues from this file itself
+        (out_dir / LAYOUT_FLAG_NAME).write_text("1", encoding="utf-8")
+    except BaseException:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise
+    finally:
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+    yield _status(f"Saving {name}…")
+    yield _publish(session, dst, "xlsx", shown, row.id)
+
+    note = f"Edited **{shown}**: {result.summary}. Saved the result as **{dst.name}**."
+    if result.skipped:
+        note += f" Not done: {'; '.join(result.skipped)}."
+    if result.warnings:
+        note += f" Note: {'; '.join(result.warnings)}."
+    if chained:
+        note += " This continues from your previous edit; say “from the original” to start over."
+    return note
+
+
 def _status(text: str) -> dict:
     return {"event": "status", "data": {"text": text}}
 
@@ -363,9 +435,27 @@ def edit_events(
             earlier = edits_in_conversation(session, conversation_id, row.id, before_history_id)
             previous = None if wants_original(instruction) else _previous(earlier)
             requested = requested_format(instruction) or (previous.record.fmt if previous else None)
-            fmt = output_format(name, row.mime_type, requested)
             version = len(earlier) + 1
             shown = Path(previous.record.stored_path).name if previous else name
+
+            # an Excel file: exact operations on its cells, columns and rows (xlsx_ops.py)
+            spreadsheet = _spreadsheet_base(row, previous)
+            if spreadsheet is not None:
+                note = yield from _edit_spreadsheet(
+                    session,
+                    row=row,
+                    instruction=instruction,
+                    llm=llm,
+                    data_dir=data_dir,
+                    base=spreadsheet,
+                    shown=shown,
+                    version=version,
+                    chained=previous is not None,
+                )
+                notes.append(note)
+                continue
+
+            fmt = output_format(name, row.mime_type, requested)
 
             # A request can change the words, the look, or both ("shorten the intro and make the
             # headings dark blue"): split it, change the words first, then restyle the result.

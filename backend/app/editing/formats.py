@@ -2,7 +2,8 @@
 
 Text formats (Markdown, plain text, CSV, JSON, YAML...) come back in the
 same format, with the model's edited text written as-is. A PDF comes back
-as a PDF and a Word file as a Word file; everything else (PPTX, HTML,
+as a PDF and a Word file as a Word file; an Excel file comes back as an
+.xlsx, edited in place (xlsx_ops.py); everything else (PPTX, HTML,
 images, email...) becomes a DOCX. Those documents were converted to
 Markdown on ingest, so the edited Markdown is rebuilt with pandoc (and
 weasyprint for PDF) -- the original layout (fonts, headers, images) is
@@ -65,9 +66,7 @@ def output_format(filename: str, mime_type: str, requested: str | None = None) -
     text), else DOCX."""
     suffix = Path(filename).suffix.lower()
     if suffix in SPREADSHEET_EXTENSIONS:
-        raise EditNotSupportedError(
-            "editing spreadsheets isn't supported yet; text documents, PDFs and Word files work"
-        )
+        return "xlsx"  # edited cell by cell with exact operations (xlsx_ops.py); an .xls comes back as .xlsx
 
     own = TEXT_OUTPUT_FORMATS.get(suffix) if is_plain_text(mime_type, filename) else None
     # data files (JSON, CSV, YAML...) keep their format; turning them into a

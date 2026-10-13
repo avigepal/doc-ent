@@ -39,6 +39,7 @@ ROUTE_LABELS = {
     "keyword": "Finding matches…",
     "report": "Reading all your documents…",
     "report_refine": "Updating the report…",
+    "spreadsheet": "Building your spreadsheet…",
     "report_plan": "",
 }
 

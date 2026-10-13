@@ -10,7 +10,7 @@ Tailscale-only network until fully built, then exposed to the office LAN.
 | Phase | Scope | Status |
 |---|---|---|
 | 1. Ingestion foundation | manifest walker, handler registry, pre-run summary | ✅ built, tested |
-| 2. Conversion pipeline | Docling (`convert_fast`), email archives (`convert_email_archive`: .eml/.mbox/.msg/.pst) | ✅ built, tested, incl. image conversion via the vision model; Marker/Tika fallback + `convert_ocr` still 🚧 |
+| 2. Conversion pipeline | Docling (`convert_fast`; old .doc/.xls/.ppt are first converted to .docx/.xlsx/.pptx with headless LibreOffice, which is in the app image), email archives (`convert_email_archive`: .eml/.mbox/.msg/.pst) | ✅ built, tested, incl. image conversion via the vision model; Marker/Tika fallback + `convert_ocr` still 🚧 |
 | 3. Summarization | chunking, map-summarize, hierarchical reduce (file-level) | ✅ built, tested; group/final reduce 🚧 (blocked on grouping-strategy decision) |
 | 4. Search + correlation | pgvector retrieval, folder-scoped (search only selected top-level `raw/` folders); unified `/query` (grounded answer + cross-doc + statistical in one call) | ✅ built, tested; statistical mode's spreadsheet `tables` input 🚧 (not yet wired to a source) |
 | 5. Output & hardening | pandoc PDF-first export (xelatex), ad-hoc export (download a query result directly, no saved file needed) | ✅ built, tested, **verified live** (real PDF produced through the API) — pandoc reference template + systemd/boot hardening ⬜ not started |

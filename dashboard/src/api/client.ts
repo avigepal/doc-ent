@@ -174,7 +174,8 @@ export const api = {
       beforeHistoryId?: number;
       // "report": read every document in scope and write a full report, whatever the message says
       // "report_confirmed": a report over a big folder after the user saw the plan and pressed "Read them all"
-      mode?: "report" | "edit" | "report_confirmed";
+      // "spreadsheet": read every document in scope for the rows the message asks for and build an .xlsx
+      mode?: "report" | "edit" | "spreadsheet" | "report_confirmed";
     } = {},
     handlers: {
       onMeta?: (meta: { sources: string[]; grounded: boolean }) => void;
@@ -703,10 +704,13 @@ export interface ExportHistoryRow {
  * and triggers the browser's normal save-file flow. Not a separate
  * "export" page/step: this is called directly from the Ask page's
  * result card. */
+/** "csv" and "xlsx" export the answer's tables (a CSV of several tables arrives as a .zip). */
+export type ExportFormat = "pdf" | "docx" | "xlsx" | "csv";
+
 export async function downloadExport(
   content: string,
   filename: string,
-  fmt: "pdf" | "docx" = "pdf",
+  fmt: ExportFormat = "pdf",
   historyId?: number,
 ): Promise<void> {
   const token = getToken();
@@ -735,7 +739,9 @@ export async function downloadExport(
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `${filename}.${fmt}`;
+  // the server names the file: a CSV of several tables is really a .zip
+  const named = /filename="?([^";]+)"?/i.exec(response.headers.get("content-disposition") ?? "");
+  link.download = named?.[1] ?? `${filename}.${fmt}`;
   document.body.appendChild(link);
   link.click();
   link.remove();

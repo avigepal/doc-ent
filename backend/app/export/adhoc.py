@@ -31,6 +31,12 @@ def prepare_adhoc_export(
     adhoc_dir = exports_root / "adhoc"
     adhoc_dir.mkdir(parents=True, exist_ok=True)
 
+    # the tables of the answer, as a spreadsheet (no pandoc involved)
+    if fmt in ("csv", "xlsx"):
+        from app.export.tables import export_tables
+
+        return export_tables(content, adhoc_dir, safe_filename(filename), fmt)
+
     source = adhoc_dir / f"{safe_filename(filename)}.md"
     source.write_text(content, encoding="utf-8")
 

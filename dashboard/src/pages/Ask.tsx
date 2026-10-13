@@ -9,6 +9,7 @@ import {
   ScrollText,
   Sparkles,
   Square,
+  Table2,
   Upload,
   X,
 } from "lucide-react";
@@ -28,6 +29,7 @@ import {
   ApiError,
   downloadExport,
   downloadGeneratedFile,
+  type ExportFormat,
   isAbortError,
   type GeneratedFile,
   type QueryHistoryDetail,
@@ -36,9 +38,14 @@ import {
 import { ModeToggle } from "../components/ModeToggle";
 import { AttachmentTray, STAGE_LABEL, isPending, type Attachment } from "../components/AttachmentTray";
 import { ResultCard, shortenSource } from "../components/ResultCard";
+import { hasMarkdownTable } from "../tables";
 import { UPLOAD_ACCEPT, UPLOAD_TYPES_TEXT, skippedMessage, splitSupportedFiles } from "../uploadTypes";
 import { useNow } from "../time";
 import { button, buttonSecondary, errorText, formatButton, glass, input, muted } from "../ui";
+
+/** The downloads an answer offers: PDF and Word always, and the spreadsheet formats when it holds a table. */
+const exportFormats = (answer: string): ExportFormat[] =>
+  hasMarkdownTable(answer) ? ["pdf", "docx", "xlsx", "csv"] : ["pdf", "docx"];
 
 /** Replies that get related questions underneath: answers and reports from the
  * documents (not keyword listings, direct chats, file edits or library lookups). */
@@ -308,7 +315,7 @@ export function Ask() {
   // The report job a worker is running for the reply being streamed (Stop cancels it too).
   const jobIdRef = useRef<string | null>(null);
   const questionRef = useRef<HTMLTextAreaElement>(null);
-  const [downloading, setDownloading] = useState<{ id: string; fmt: "pdf" | "docx" } | null>(null);
+  const [downloading, setDownloading] = useState<{ id: string; fmt: ExportFormat } | null>(null);
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
   const [comparingId, setComparingId] = useState<string | null>(null);
   // a reply is being written: a new question, or a regenerate
@@ -322,6 +329,8 @@ export function Ask() {
   const [reportMode, setReportMode] = useState(false);
   // The Edit file toggle: the next message is an instruction for the attached file.
   const [editMode, setEditMode] = useState(false);
+  // The Spreadsheet toggle: the next message says what to collect from the documents into an .xlsx.
+  const [sheetMode, setSheetMode] = useState(false);
   // something to read: files attached to this chat, or a folder / everything under Scope
   const hasDocuments = attachments.length > 0 || scopeAll || selectedFolders.length > 0;
   // Mirror of `attachments` for the status poll, which outlives renders.
@@ -513,7 +522,7 @@ export function Ask() {
     chatOnly: boolean,
     fileIds: number[] = [],
     beforeHistoryId?: number,
-    mode?: "report" | "edit" | "report_confirmed",
+    mode?: "report" | "edit" | "spreadsheet" | "report_confirmed",
   ) => {
     const controller = new AbortController();
     abortRef.current = controller;
@@ -537,7 +546,7 @@ export function Ask() {
     fileIds: number[],
     beforeHistoryId: number | undefined,
     signal: AbortSignal,
-    mode?: "report" | "edit" | "report_confirmed",
+    mode?: "report" | "edit" | "spreadsheet" | "report_confirmed",
   ) => {
     // what the finished reply turned out to be, for the related questions asked for afterwards
     const got = { answer: "", sources: [] as string[], route: "", historyId: undefined as number | undefined };
@@ -670,7 +679,7 @@ export function Ask() {
     folders: string[],
     chatOnly: boolean,
     fileIds: number[],
-    mode?: "report" | "edit" | "report_confirmed",
+    mode?: "report" | "edit" | "spreadsheet" | "report_confirmed",
   ) => {
     const entryId = crypto.randomUUID();
 
@@ -751,9 +760,17 @@ export function Ask() {
     const fileIds = attachments.filter((a) => a.stage === "ready").map((a) => a.id);
     const chatOnly = fileIds.length === 0 && !scopeAll && selectedFolders.length === 0;
     // the Full report toggle applies to this one message, then switches itself off
-    const mode = editMode && fileIds.length > 0 ? "edit" : reportMode && hasDocuments ? "report" : undefined;
+    const mode =
+      editMode && fileIds.length > 0
+        ? "edit"
+        : sheetMode && hasDocuments
+          ? "spreadsheet"
+          : reportMode && hasDocuments
+            ? "report"
+            : undefined;
     setReportMode(false);
     setEditMode(false);
+    setSheetMode(false);
     setQuestion("");
     await askNew(askedQuestion, selectedFolders, chatOnly, fileIds, mode);
   };
@@ -899,7 +916,7 @@ export function Ask() {
       next.set("all", "1");
     });
 
-  const handleDownload = async (entryId: string, result: QueryResult, fmt: "pdf" | "docx") => {
+  const handleDownload = async (entryId: string, result: QueryResult, fmt: ExportFormat) => {
     setDownloading({ id: entryId, fmt });
     setError(null);
     try {
@@ -927,6 +944,25 @@ export function Ask() {
         onToggle={() => {
           setEditMode((v) => !v);
           setReportMode(false);
+          setSheetMode(false);
+        }}
+      />
+      <ModeToggle
+        label="Spreadsheet"
+        tone="sheet"
+        Icon={Table2}
+        help="Read every document in scope and collect what you ask for (every invoice with its date and total, say) into an Excel file"
+        on={sheetMode && hasDocuments}
+        disabled={!hasDocuments || busy}
+        disabledReason={
+          busy
+            ? "Wait for the current reply to finish"
+            : "Choose a folder under Scope, or attach files, to build a spreadsheet from"
+        }
+        onToggle={() => {
+          setSheetMode((v) => !v);
+          setEditMode(false);
+          setReportMode(false);
         }}
       />
       <ModeToggle
@@ -944,6 +980,7 @@ export function Ask() {
       onToggle={() => {
         setReportMode((v) => !v);
         setEditMode(false);
+        setSheetMode(false);
       }}
     />
     </div>
@@ -1046,7 +1083,7 @@ export function Ask() {
                       )}
                     </button>
                     {/* an edit already made its own file (shown above), so exporting the reply is pointless */}
-                    {!entry.result.files?.length && (["pdf", "docx"] as const).map((fmt) => (
+                    {!entry.result.files?.length && exportFormats(entry.result.answer).map((fmt) => (
                       <button
                         key={fmt}
                         title={`Download as ${fmt.toUpperCase()}`}
@@ -1140,6 +1177,8 @@ export function Ask() {
                 placeholder={
                   editMode && hasFiles
                     ? "What should change? e.g. Shorten the intro and make the headings dark blue"
+                    : sheetMode && hasDocuments
+                    ? "What should the spreadsheet contain? e.g. Every invoice with number, date, vendor and total"
                     : reportMode && hasDocuments
                     ? "What should the report cover? e.g. Everything about this person"
                     : attachments.length > 0

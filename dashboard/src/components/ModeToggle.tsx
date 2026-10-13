@@ -10,6 +10,10 @@ const TONE = {
     on: "border-[var(--report)] bg-[var(--report-soft)] font-medium text-[var(--report)]",
     off: "border-[var(--report)]/40 text-[var(--report)] hover:border-[var(--report)] hover:bg-[var(--report-soft)]",
   },
+  sheet: {
+    on: "border-[var(--xlsx)] bg-[var(--xlsx-soft)] font-medium text-[var(--xlsx)]",
+    off: "border-[var(--xlsx)]/40 text-[var(--xlsx)] hover:border-[var(--xlsx)] hover:bg-[var(--xlsx-soft)]",
+  },
 } as const;
 
 /** A mode switch for the next message (Edit file, Full report), colored by mode.

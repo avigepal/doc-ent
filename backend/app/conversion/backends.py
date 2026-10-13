@@ -212,4 +212,14 @@ def resolve_conversion_backend(mime_type: str, filename: str | None = None) -> C
     # Docling rejects text formats outright, so anything already text (see
     # registry.is_plain_text) is read as-is. `filename` lets a log or YAML file
     # that libmagic could only call "application/octet-stream" still be read.
-    return plaintext_backend if is_plain_text(mime_type, filename) else docling_backend
+    if is_plain_text(mime_type, filename):
+        return plaintext_backend
+
+    # Docling reads only the XML Office formats; an old .doc/.xls/.ppt is converted to
+    # its modern twin first (see legacy_office.py)
+    from app.conversion.legacy_office import LegacyOfficeBackend, legacy_target
+
+    target = legacy_target(mime_type, filename)
+    if target:
+        return LegacyOfficeBackend(target=target)
+    return docling_backend

@@ -48,13 +48,18 @@ COPY backend/requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system -r requirements.txt
 
+# libreoffice-writer/calc/impress: converts old .doc/.xls/.ppt files to .docx/.xlsx/.pptx
+# before Docling reads them (Docling doesn't read the old formats); see
+# app/conversion/legacy_office.py. Headless use only, no GUI or Java. Costs roughly 400 MB.
+#
 # fonts-noto-core: glyphs for Devanagari (Hindi), Arabic, Thai, Tamil and
 # other scripts, so a PDF made by the edit feature ("translate to Hindi, as a
 # PDF") doesn't render as empty boxes -- the base fonts only cover Latin.
 # Chinese/Japanese/Korean would need fonts-noto-cjk (~60 MB more).
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends fonts-noto-core
+    apt-get update && apt-get install -y --no-install-recommends \
+    fonts-noto-core libreoffice-writer libreoffice-calc libreoffice-impress
 
 COPY backend/app ./app
 COPY --from=dashboard-build /dashboard/dist /app/dashboard_dist

@@ -23,6 +23,8 @@
   --pdf-soft: #fbe4e1;
   --docx: #1d4f91;
   --docx-soft: #dbe7f7;
+  --xlsx: #1d6f42;
+  --xlsx-soft: #dcefe3;
   /* Ask-bar modes: Edit file violet, Full report teal (soft tint for the on-state fill) */
   --edit: #6a3d9a;
   --edit-soft: #ece3f6;
@@ -57,6 +59,10 @@
     --pdf-soft: #3a1a18;
     --docx: #8fb4f0;
     --docx-soft: #172540;
+  --xlsx: #6fcf97;
+  --xlsx-soft: #14301f;
+    --xlsx: #6fcf97;
+    --xlsx-soft: #14301f;
   --edit: #c4a4ec;
   --edit-soft: #2a1f3d;
   --report: #6cc4c4;
@@ -90,6 +96,8 @@
   --pdf-soft: #3a1a18;
   --docx: #8fb4f0;
   --docx-soft: #172540;
+  --xlsx: #6fcf97;
+  --xlsx-soft: #14301f;
   --edit: #c4a4ec;
   --edit-soft: #2a1f3d;
   --report: #6cc4c4;

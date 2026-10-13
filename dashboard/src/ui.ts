@@ -25,11 +25,15 @@ const formatButtonBase =
 export const formatButton = {
   pdf: `${formatButtonBase} border-[var(--pdf)]/45 bg-[var(--pdf-soft)] text-[var(--pdf)] hover:border-[var(--pdf)] hover:bg-[var(--pdf)] hover:text-[var(--paper)]`,
   docx: `${formatButtonBase} border-[var(--docx)]/45 bg-[var(--docx-soft)] text-[var(--docx)] hover:border-[var(--docx)] hover:bg-[var(--docx)] hover:text-[var(--paper)]`,
+  xlsx: `${formatButtonBase} border-[var(--xlsx)]/45 bg-[var(--xlsx-soft)] text-[var(--xlsx)] hover:border-[var(--xlsx)] hover:bg-[var(--xlsx)] hover:text-[var(--paper)]`,
+  csv: `${formatButtonBase} border-[var(--locator)]/45 bg-[var(--locator-soft)] text-[var(--locator)] hover:border-[var(--locator)] hover:bg-[var(--locator)] hover:text-[var(--paper)]`,
 } as const;
 
 /** The button style for an export's format; the plain secondary button for any other. */
-export const formatButtonFor = (fmt: string): string =>
-  fmt.toLowerCase() === "pdf" ? formatButton.pdf : fmt.toLowerCase() === "docx" ? formatButton.docx : `${buttonSecondary} inline-flex items-center gap-1.5`;
+export const formatButtonFor = (fmt: string): string => {
+  const known = formatButton[fmt.toLowerCase() as keyof typeof formatButton];
+  return known ?? `${buttonSecondary} inline-flex items-center gap-1.5`;
+};
 
 // For bars that sit over the page while content scrolls under them (the header and
 // the question bar): translucent, with a blur, so the page background shows through

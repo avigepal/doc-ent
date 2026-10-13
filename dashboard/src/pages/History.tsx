@@ -245,7 +245,11 @@ export function History() {
                       ? "text-[var(--pdf)]"
                       : row.fmt.toLowerCase() === "docx"
                         ? "text-[var(--docx)]"
-                        : ""
+                        : row.fmt.toLowerCase() === "xlsx"
+                          ? "text-[var(--xlsx)]"
+                          : row.fmt.toLowerCase() === "csv"
+                            ? "text-[var(--locator)]"
+                            : ""
                   }`}
                 >
                   {row.fmt}
