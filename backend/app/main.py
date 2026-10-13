@@ -3,11 +3,12 @@ import logging
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app import auth
 from app.config import settings
 from app.db import engine, get_session
 from app.queue_guard import UPLOAD_QUEUE
@@ -70,6 +71,15 @@ def _run_startup_migrations() -> None:
 
 
 @app.on_event("startup")
+def _warn_about_default_secrets() -> None:
+    log = logging.getLogger(__name__)
+    if not settings.login_password:
+        log.warning("LOGIN_PASSWORD is not set: people log in with the BEARER_TOKEN. Set a separate LOGIN_PASSWORD.")
+    if settings.bearer_token == "change-me-to-a-long-random-token" or settings.login_password == "change-me-login-password":
+        log.warning("A secret is still the example value from .env.example: change BEARER_TOKEN and LOGIN_PASSWORD.")
+
+
+@app.on_event("startup")
 def _preload_task_modules() -> None:
     """The ingest endpoints import the Celery tasks lazily; the first upload
     after a restart then paid ~3 seconds of one-time imports before
@@ -80,9 +90,48 @@ def _preload_task_modules() -> None:
 
 
 def require_bearer_token(authorization: str | None = Header(default=None)) -> None:
-    expected = f"Bearer {settings.bearer_token}"
-    if authorization != expected:
-        raise HTTPException(status_code=401, detail="missing or invalid bearer token")
+    """Every API call needs `Authorization: Bearer ...`: the BEARER_TOKEN (programs) or a session token
+    from /auth/login (the dashboard)."""
+    presented = authorization[len("Bearer "):] if authorization and authorization.startswith("Bearer ") else ""
+    if presented:
+        if auth.same_secret(presented, settings.bearer_token):
+            return
+        password = auth.effective_password(settings.login_password, settings.bearer_token)
+        if auth.valid_session_token(presented, password, settings.bearer_token):
+            return
+    raise HTTPException(status_code=401, detail="missing or invalid bearer token")
+
+
+class LoginRequest(BaseModel):
+    password: str
+
+
+_login_throttle = auth.LoginThrottle()
+
+
+@app.post("/auth/login")
+def login(payload: LoginRequest, request: Request) -> dict:
+    """The dashboard's login: the password is checked here, and a correct one is answered with a session
+    token (good for SESSION_HOURS) that the dashboard then sends on every call. Repeated wrong passwords
+    from one address are turned away for a minute."""
+    import time
+
+    client = request.client.host if request.client else "unknown"
+    wait = _login_throttle.wait_seconds(client)
+    if wait:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many wrong passwords. Try again in {wait} seconds.",
+            headers={"Retry-After": str(wait)},
+        )
+    password = auth.effective_password(settings.login_password, settings.bearer_token)
+    if not payload.password or not auth.same_secret(payload.password, password):
+        _login_throttle.failed(client)
+        time.sleep(0.4)  # a wrong guess costs a little, however it is sent
+        raise HTTPException(status_code=401, detail="Wrong password")
+    _login_throttle.succeeded(client)
+    token, expires_at = auth.make_session_token(password, settings.bearer_token, settings.session_hours * 3600)
+    return {"token": token, "expires_at": expires_at}
 
 
 @app.get("/health")

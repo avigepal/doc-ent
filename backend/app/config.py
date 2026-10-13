@@ -11,7 +11,13 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
 
     data_dir: str = "/data/pipeline"
+    # For programs that call the API directly (curl, scripts); never sent to the browser.
     bearer_token: str = "change-me-to-a-long-random-token"
+    # What people type on the dashboard's login screen. Empty = the bearer token is the password
+    # (the old behavior), so set this. See app/auth.py.
+    login_password: str = ""
+    # How long a dashboard sign-in lasts before the password is asked for again.
+    session_hours: int = 168
 
     llama_text_url: str = "http://llama-text:8080"
     llama_vision_url: str = "http://llama-vision:8080"

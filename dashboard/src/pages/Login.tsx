@@ -1,20 +1,33 @@
+import { Loader2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
+import { api, ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import { button, input } from "../ui";
+import { button, errorText, input } from "../ui";
 
 export function Login() {
   const [tokenInput, setTokenInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const { login } = useAuth();
   const navigate = useNavigate();
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    // Not validated here on purpose — the token is only ever checked by
-    // the server on the next real request. If it's wrong, that request's
-    // 401 bounces the user back here (see RequireAuth in App.tsx).
-    login(tokenInput.trim());
-    navigate("/status");
+    setBusy(true);
+    setError(null);
+    try {
+      // the server checks the password and answers with a session that expires
+      login(await api.login(tokenInput));
+      navigate("/status");
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : "Couldn't reach the server. Check that it is running and try again.",
+      );
+      setBusy(false);
+    }
   };
 
   return (
@@ -38,8 +51,13 @@ export function Login() {
           autoFocus
           className={`${input} mt-6 mb-4 w-full`}
         />
-        <button type="submit" disabled={!tokenInput} className={`${button} w-full`}>
-          Enter
+        {error && (
+          <p role="alert" className={`mb-3 ${errorText}`}>
+            {error}
+          </p>
+        )}
+        <button type="submit" disabled={!tokenInput || busy} className={`${button} inline-flex w-full items-center justify-center gap-2`}>
+          {busy && <Loader2 size={14} className="animate-spin" />} Enter
         </button>
       </form>
     </div>

@@ -42,13 +42,25 @@ export class ApiError extends Error {
   }
 }
 
+/** fetch for every call that needs a sign-in. A 401 means the session ended (it expires, and a new
+ * login password signs everybody out): the saved token is dropped and the login page opens, instead
+ * of leaving the person on a page of errors. */
+async function authFetch(input: string, init?: RequestInit): Promise<Response> {
+  const response = await fetch(input, init);
+  if (response.status === 401) {
+    clearToken();
+    if (window.location.pathname !== "/login") window.location.assign("/login");
+  }
+  return response;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getToken();
   const headers = new Headers(options.headers);
   headers.set("Content-Type", "application/json");
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  const response = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+  const response = await authFetch(`${BASE_URL}${path}`, { ...options, headers });
 
   if (!response.ok) {
     let detail = response.statusText;
@@ -67,6 +79,26 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   health: () => request<{ status: string }>("/health"),
+
+  /** Checks the login password on the server. Returns the session token to send on every later call;
+   * throws ApiError (401 wrong password, 429 too many tries) otherwise. */
+  login: async (password: string): Promise<string> => {
+    const response = await fetch(`${BASE_URL}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        detail = (await response.json()).detail ?? detail;
+      } catch {
+        // not JSON; keep statusText
+      }
+      throw new ApiError(response.status, detail);
+    }
+    return (await response.json()).token as string;
+  },
 
   // Rebuilds an edited Word file with only the accepted changes (indices from its change list).
   updateFileChanges: (fileId: number, accepted: number[]) =>
@@ -200,7 +232,7 @@ export const api = {
     headers.set("Content-Type", "application/json");
     if (token) headers.set("Authorization", `Bearer ${token}`);
 
-    const response = await fetch(`${BASE_URL}/query/stream`, {
+    const response = await authFetch(`${BASE_URL}/query/stream`, {
       method: "POST",
       headers,
       signal,
@@ -284,7 +316,7 @@ export const api = {
     // Content-Type intentionally NOT set here — the browser fills in the
     // correct multipart boundary itself only when left unset.
 
-    const response = await fetch(`${BASE_URL}/query/upload`, {
+    const response = await authFetch(`${BASE_URL}/query/upload`, {
       method: "POST",
       headers,
       body: form,
@@ -326,7 +358,7 @@ export const api = {
     if (token) headers.set("Authorization", `Bearer ${token}`);
     // Content-Type intentionally NOT set here — same reason as queryUpload.
 
-    const response = await fetch(`${BASE_URL}/ingest/upload`, {
+    const response = await authFetch(`${BASE_URL}/ingest/upload`, {
       method: "POST",
       headers,
       body: form,
@@ -368,7 +400,7 @@ export const api = {
     const headers = new Headers();
     if (token) headers.set("Authorization", `Bearer ${token}`);
 
-    const response = await fetch(`${BASE_URL}/documents/upload`, { method: "POST", headers, body: form });
+    const response = await authFetch(`${BASE_URL}/documents/upload`, { method: "POST", headers, body: form });
     if (!response.ok) {
       let detail = response.statusText;
       try {
@@ -718,7 +750,7 @@ export async function downloadExport(
   headers.set("Content-Type", "application/json");
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  const response = await fetch(`${BASE_URL}/export`, {
+  const response = await authFetch(`${BASE_URL}/export`, {
     method: "POST",
     headers,
     body: JSON.stringify({ content, filename, fmt, history_id: historyId ?? null }),
@@ -756,7 +788,7 @@ export async function downloadHistoryExport(row: ExportHistoryRow): Promise<void
   const headers = new Headers();
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  const response = await fetch(`${BASE_URL}/history/exports/${row.id}/download`, { headers });
+  const response = await authFetch(`${BASE_URL}/history/exports/${row.id}/download`, { headers });
 
   if (!response.ok) {
     let detail = response.statusText;
@@ -789,7 +821,7 @@ export async function downloadGeneratedFile(file: GeneratedFile): Promise<void> 
   const headers = new Headers();
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  const response = await fetch(`${BASE_URL}${file.download_path}`, { headers });
+  const response = await authFetch(`${BASE_URL}${file.download_path}`, { headers });
   if (!response.ok) {
     let detail = response.statusText;
     try {
