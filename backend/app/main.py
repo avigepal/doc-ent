@@ -196,13 +196,11 @@ def ingest_stop() -> dict:
 
 @app.post("/ingest/resume", dependencies=[Depends(require_bearer_token)])
 def ingest_resume() -> dict:
-    """Undo Stop: the remaining files are queued again by an ingest cycle that
-    starts right away."""
+    """Undo Stop. The remaining files are queued again the next time "Ingest
+    new files" runs."""
     from app.pipeline_control import resume
-    from app.tasks.auto_ingest import auto_ingest_cycle
 
     resume()
-    auto_ingest_cycle.delay()
     return {"paused": False}
 
 

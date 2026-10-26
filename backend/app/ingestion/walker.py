@@ -119,6 +119,10 @@ def scan_directory(root: Path, known: dict[str, KnownFile] | None = None) -> Ite
         return
 
     for path in sorted(root.rglob("*")):
+        # Dot-folders (e.g. a ".incoming" staging folder on the network share) are
+        # not part of the library until a file is moved out of them.
+        if any(part.startswith(".") for part in path.relative_to(root).parts):
+            continue
         # A file that vanished mid-scan, or that can't be read (permissions, a locked
         # system file), is skipped: one bad file must not abort a scan of thousands.
         try:

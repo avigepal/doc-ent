@@ -170,6 +170,7 @@ export function Documents() {
 
   const [targetFolder, setTargetFolder] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [ingesting, setIngesting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -375,6 +376,28 @@ export function Documents() {
     }
   };
 
+  // Files copied straight into the shared raw/ folder: scan the library for
+  // them, then queue conversion. Both steps skip files that are already done.
+  const handleIngest = async () => {
+    setIngesting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const scan = await api.ingestScan();
+      const { enqueued } = await api.ingestConvert();
+      const queued = Object.values(enqueued).reduce((sum, n) => sum + n, 0);
+      setNotice(
+        `Scanned ${scan.total_files.toLocaleString()} files. ${queued} ${queued === 1 ? "file" : "files"} queued for conversion.`,
+      );
+      await load();
+      loadFolders();
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setIngesting(false);
+    }
+  };
+
   const handleDragOver = (e: DragEvent) => {
     e.preventDefault();
     if (e.dataTransfer.types.includes("Files")) setDragging(true);
@@ -442,6 +465,15 @@ export function Documents() {
           className={`${button} inline-flex items-center gap-1.5`}
         >
           {uploading ? <Loader2 size={13} className="animate-spin" /> : <UploadCloud size={13} />} Choose files
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleIngest()}
+          disabled={ingesting}
+          title="Scan the shared raw folder for files copied in from outside the app"
+          className={`${buttonSecondary} inline-flex items-center gap-1.5`}
+        >
+          {ingesting ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Ingest new files
         </button>
       </div>
 

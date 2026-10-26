@@ -39,9 +39,10 @@ class Settings(BaseSettings):
     dashboard_dist_dir: str = ""
 
     # How often (seconds) the auto-ingest beat task scans raw/, enqueues
-    # conversion, and enqueues summarization. 0 disables the periodic
-    # schedule entirely (manual /ingest/* calls still work either way).
-    auto_ingest_interval_seconds: int = 60
+    # conversion, and enqueues summarization. 0 (the default) disables the
+    # periodic schedule: files are ingested only when someone clicks
+    # "Ingest new files" (or calls the manual /ingest/* endpoints).
+    auto_ingest_interval_seconds: int = 0
 
     # Summarizing a file is many sequential LLM calls and is by far the
     # slowest stage; search doesn't need it. False makes auto-ingest stop

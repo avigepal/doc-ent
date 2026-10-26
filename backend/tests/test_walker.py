@@ -49,6 +49,16 @@ def test_unsupported_files_are_routed_away_and_not_hashed(tmp_path: Path):
     assert result.size_bytes == exe.stat().st_size
 
 
+def test_scan_directory_ignores_dot_folders(tmp_path: Path):
+    (tmp_path / ".incoming").mkdir()
+    (tmp_path / ".incoming" / "still-copying.txt").write_text("partial")
+    (tmp_path / "done.txt").write_text("finished")
+
+    results = list(scan_directory(tmp_path))
+
+    assert [Path(r.path).name for r in results] == ["done.txt"]
+
+
 def test_scan_file_classifies_one_file_without_walking_siblings(tmp_path: Path):
     target = tmp_path / "upload.txt"
     target.write_text("just this one")
