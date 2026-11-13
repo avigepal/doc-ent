@@ -24,7 +24,7 @@ class FakeModel:
 
     def chat(self, system, user, temperature=0.2, **kwargs):
         self.calls.append(user)
-        assert system == OPS_SYSTEM_PROMPT, f"unexpected prompt: {system[:40]}"
+        assert system.startswith(OPS_SYSTEM_PROMPT), f"unexpected prompt: {system[:40]}"
         ops = self.replies.pop(0) if self.replies else []
         return json.dumps({"operations": ops, "problem": self.problem})
 

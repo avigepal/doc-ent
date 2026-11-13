@@ -63,6 +63,9 @@ logger = logging.getLogger(__name__)
 
 MAX_FILES_PER_EDIT = 5
 
+# edited files whose changes can be accepted or rejected one by one (changes.py)
+REVIEWABLE_FORMATS = ("docx", "pdf")
+
 # Docling leaves "<!-- image -->" where a picture was; it's noise in an edit.
 _IMAGE_PLACEHOLDER = re.compile(r"<!--\s*image\s*-->\n*")
 
@@ -169,7 +172,7 @@ def _publish(session: Session, path: Path, fmt: str, shown: str, source_file_id:
         "source": shown,
         "download_path": f"/history/exports/{export_id}/download",
     }
-    changes = describe_changes(path) if fmt == "docx" else None
+    changes = describe_changes(path) if fmt in REVIEWABLE_FORMATS else None
     if changes:
         data["changes"] = changes  # the dashboard lets the user accept or reject each one
     return {"event": "file", "data": data}
@@ -296,9 +299,9 @@ def _edit_in_layout(
     style_ops: list = []
     if style:
         dst, style_note, _, style_ops = yield from _restyle_output(dst, fmt, style, llm, name)
-    if fmt == "docx" and result.changes:
+    if result.changes and fmt in REVIEWABLE_FORMATS:
         # so each change can be accepted or rejected later (changes.py)
-        save_changes(dst, base, list(result.ops), list(result.changes), style_ops)
+        save_changes(dst, base, list(result.ops), list(result.changes), style_ops, kind=fmt)
 
     yield _status(f"Saving {name}…")
     yield _publish(session, dst, fmt, shown, row.id)
@@ -506,7 +509,9 @@ def edit_events(
                     and parse_replacement(instruction) is None
                     and wants_exact_edit(text_instruction, structural)
                 )
-                if parse_replacement(instruction) is None and structural and not exact:
+                # Word: a structural change goes to the exact editor (or the clean rebuild);
+                # PDF: pdf_layout tries page operations first and says when it can't
+                if fmt == "docx" and parse_replacement(instruction) is None and structural and not exact:
                     layout_note = (
                         "This change adds, removes or rearranges content, which can't be done inside the "
                         "original layout, so the result is a clean document."

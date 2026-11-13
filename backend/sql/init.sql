@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS query_history (
     grounded BOOLEAN NOT NULL DEFAULT FALSE,
     cross_doc JSONB,
     statistical JSONB,
+    graph JSONB,
     filter_folders JSONB NOT NULL DEFAULT '[]'::jsonb,
     filter_author TEXT,
     filter_title TEXT,
@@ -104,3 +105,20 @@ CREATE TABLE IF NOT EXISTS export_history (
 CREATE INDEX IF NOT EXISTS idx_query_history_created_at ON query_history (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_query_history_conversation_id ON query_history (conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_export_history_created_at ON export_history (created_at DESC);
+
+-- who wrote to whom (one row per message and recipient), for "who mailed whom"
+CREATE TABLE IF NOT EXISTS email_links (
+    id             BIGSERIAL PRIMARY KEY,
+    file_id        BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    msg_index      INT NOT NULL DEFAULT 0,
+    subject        TEXT NOT NULL DEFAULT '',
+    sent_at        TIMESTAMPTZ,
+    sender_name    TEXT NOT NULL DEFAULT '',
+    sender_addr    TEXT NOT NULL DEFAULT '',
+    recipient_name TEXT NOT NULL DEFAULT '',
+    recipient_addr TEXT NOT NULL DEFAULT '',
+    kind           TEXT NOT NULL DEFAULT 'to'
+);
+CREATE INDEX IF NOT EXISTS idx_email_links_file_id ON email_links (file_id);
+CREATE INDEX IF NOT EXISTS idx_email_links_sender ON email_links (sender_addr);
+CREATE INDEX IF NOT EXISTS idx_email_links_recipient ON email_links (recipient_addr);

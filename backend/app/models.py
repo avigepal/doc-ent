@@ -110,6 +110,26 @@ class ReportNotesRecord(Base):
     __table_args__ = (UniqueConstraint("file_id", "request_key", name="uq_report_notes_file_request"),)
 
 
+class EmailLinkRecord(Base):
+    """Who wrote to whom, one row per (message, recipient): the data behind "who mailed whom". Filled when an
+    email file is converted (see app/ingestion/email_store.py) and removed with the file (ON DELETE CASCADE).
+    Addresses are lowercase; names are whatever the message called them. `kind` is "to" or "cc". A message
+    with no recipients keeps one row with an empty recipient_addr, so it is still counted as sent."""
+
+    __tablename__ = "email_links"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    file_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("files.id", ondelete="CASCADE"), index=True)
+    msg_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    subject: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sender_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    sender_addr: Mapped[str] = mapped_column(Text, nullable=False, default="", index=True)
+    recipient_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    recipient_addr: Mapped[str] = mapped_column(Text, nullable=False, default="", index=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False, default="to")
+
+
 class QueryHistoryRecord(Base):
     """One row per query run through /query or /query/upload. Stores the
     full result, not just the question: re-running a query against a local
@@ -124,6 +144,8 @@ class QueryHistoryRecord(Base):
     grounded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     cross_doc: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     statistical: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # the relation chart's nodes and edges (app/search/email_graph.py), null for every other answer
+    graph: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # filter_* rather than author/title: `files` already has title/author
     # columns meaning document-intrinsic metadata, and an unprefixed name

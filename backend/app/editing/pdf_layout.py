@@ -36,9 +36,11 @@ from app.editing.layout import (
     LayoutUnsupported,
     ParagraphLLM,
     batches,
+    needs_rebuild,
     reword_batch,
 )
 from app.editing.literal import find_spans, looks_like_name, parse_replacement
+from app.editing.pdf_pages import apply_page_ops, plan_page_ops, summarize_pages
 from app.editing.textspans import apply_spans
 
 _FONT_DIRS = (
@@ -581,6 +583,25 @@ def edit_pdf(src: Path, dst: Path, instruction: str, llm: ParagraphLLM) -> Itera
             if looks_like_name(replacement.old):
                 # maybe split over two lines, which only the whole-text edit can match
                 raise LayoutUnsupported(f'"{replacement.old}" isn\'t on a single line of the PDF')
+
+        if needs_rebuild(instruction):
+            # adds, removes or rearranges content: do it to whole pages (pdf_pages.py), keeping every other page as it is
+            yield EditProgress("Working out which pages to change")
+            ops, problem = plan_page_ops(doc, instruction, llm)
+            if not ops:
+                raise LayoutUnsupported(problem or "this change adds or removes content, which can't be done inside the original layout")
+            changes, skipped = apply_page_ops(doc, ops)
+            if not changes:
+                raise LayoutUnsupported("none of those pages could be changed")
+            _save(doc, dst)
+            yield LayoutResult(
+                changed=len(changes),
+                summary=summarize_pages(changes),
+                changes=tuple(changes),
+                skipped=tuple(skipped),
+                ops=tuple(ops),
+            )
+            return
 
         result: LayoutResult | None = None
         for update in _reword(doc, instruction, llm, book):

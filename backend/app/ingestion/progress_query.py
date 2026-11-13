@@ -47,6 +47,10 @@ FOLDER = (
     f"THEN split_part(substr({_NORM}, :blen + 1), '/', 1) END"
 )
 
+# only files under the scope path (the whole of raw/, or one folder and its subfolders);
+# needs the :scope and :slen parameters that get_ingestion_progress passes
+SCOPE = f"left({_NORM}, :slen) = :scope"
+
 # a file with a running conversion job (newest of its type)
 CONVERTING = (
     "EXISTS (SELECT 1 FROM jobs j WHERE j.file_id = f.id AND j.job_type LIKE 'convert%' "
@@ -54,7 +58,7 @@ CONVERTING = (
 )
 
 # converted files still waiting to be searchable: no finished or failed indexing, no chunks yet
-INDEXING_FROM = """
+INDEXING_FROM = f"""
     FROM files f
     LEFT JOIN LATERAL (
         SELECT state, created_at FROM jobs WHERE file_id = f.id AND job_type = 'index' ORDER BY id DESC LIMIT 1
@@ -62,7 +66,19 @@ INDEXING_FROM = """
     WHERE f.status IN ('converted', 'summarized')
       AND coalesce(li.state, '') NOT IN ('done', 'failed')
       AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.file_id = f.id)
+      AND {SCOPE}
 """
+
+
+def _scan_covering(scan: dict | None, folder: str) -> dict | None:
+    """A folder view shows the running scan only when that scan covers the folder:
+    a scan of all of raw/ ("") or of the folder itself or one of its parents."""
+    if scan is None or not folder:
+        return scan
+    covered = scan.get("folder", "")
+    if covered and folder != covered and not folder.startswith(covered + "/"):
+        return None
+    return scan
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -73,10 +89,15 @@ def _elapsed(now: datetime, since: datetime | None) -> int:
     return max(0, int((now - since).total_seconds())) if since else 0
 
 
-def get_ingestion_progress(session: Session, raw_dir: str, pipeline_limit: int = PIPELINE_LIMIT) -> dict:
+def get_ingestion_progress(
+    session: Session, raw_dir: str, pipeline_limit: int = PIPELINE_LIMIT, folder: str = ""
+) -> dict:
+    """`folder` ("" = all of raw/, else one folder under it) limits every count and
+    list to that folder and its subfolders. The folder must already be validated."""
     now = datetime.now(timezone.utc)
     base = raw_dir.replace("\\", "/").rstrip("/") + "/"
-    anchor = {"base": base, "blen": len(base)}
+    scope = base + folder + "/" if folder else base
+    anchor = {"base": base, "blen": len(base), "scope": scope, "slen": len(scope)}
 
     def rows(sql: str, **params):
         return session.execute(text(sql), {**anchor, **params}).all()
@@ -91,7 +112,10 @@ def get_ingestion_progress(session: Session, raw_dir: str, pipeline_limit: int =
     def bucket(name: str) -> dict[str, int]:
         return folders.setdefault(name, {"total": 0, "converted": 0, "summarized": 0, "running": 0, "failed": 0})
 
-    for folder, status, n in rows(f"SELECT {FOLDER} AS folder, f.status, count(*) FROM files f GROUP BY 1, 2"):
+    for folder, status, n in rows(f"SELECT {FOLDER} AS folder, f.status, count(*) FROM files f WHERE {SCOPE} GROUP BY 1, 2"):
+        # a PDF waiting for OCR is still in the queue as far as the user is concerned
+        if status == "ocr":
+            status = "discovered"
         if status == "unsupported":
             totals["unsupported"] += n
             continue
@@ -111,7 +135,7 @@ def get_ingestion_progress(session: Session, raw_dir: str, pipeline_limit: int =
     for folder, state, n in rows(
         f"SELECT {FOLDER} AS folder, j.state, count(DISTINCT j.file_id) "
         f"FROM jobs j JOIN files f ON f.id = j.file_id "
-        f"WHERE j.state IN ('running', 'failed') AND {NEWEST} GROUP BY 1, 2"
+        f"WHERE j.state IN ('running', 'failed') AND {NEWEST} AND {SCOPE} GROUP BY 1, 2"
     ):
         key = "running" if state == "running" else "failed"
         totals[key] += n
@@ -130,7 +154,7 @@ def get_ingestion_progress(session: Session, raw_dir: str, pipeline_limit: int =
         {**entry(path, size, job_type), "elapsed_seconds": _elapsed(now, created_at)}
         for path, size, job_type, created_at in rows(
             f"SELECT f.path, f.size_bytes, j.job_type, j.created_at FROM jobs j JOIN files f ON f.id = j.file_id "
-            f"WHERE j.state = 'running' AND {NEWEST} ORDER BY j.created_at LIMIT :cap",
+            f"WHERE j.state = 'running' AND {NEWEST} AND {SCOPE} ORDER BY j.created_at LIMIT :cap",
             cap=LIST_LIMIT,
         )
     ]
@@ -140,17 +164,19 @@ def get_ingestion_progress(session: Session, raw_dir: str, pipeline_limit: int =
         for path, size, job_type, error, retries, updated_at in rows(
             f"SELECT f.path, f.size_bytes, j.job_type, j.error, j.retries, j.updated_at "
             f"FROM jobs j JOIN files f ON f.id = j.file_id "
-            f"WHERE j.state = 'failed' AND {NEWEST} ORDER BY j.updated_at DESC LIMIT :cap",
+            f"WHERE j.state = 'failed' AND {NEWEST} AND {SCOPE} ORDER BY j.updated_at DESC LIMIT :cap",
             cap=LIST_LIMIT,
         )
     ]
-    failures_total = rows(f"SELECT count(*) FROM jobs j WHERE j.state = 'failed' AND {NEWEST}")[0][0]
+    failures_total = rows(
+        f"SELECT count(*) FROM jobs j JOIN files f ON f.id = j.file_id WHERE j.state = 'failed' AND {NEWEST} AND {SCOPE}"
+    )[0][0]
 
     recent = [
         {**entry(path, size, job_type), "finished_at": _iso(updated_at)}
         for path, size, job_type, updated_at in rows(
             f"SELECT f.path, f.size_bytes, j.job_type, j.updated_at FROM jobs j JOIN files f ON f.id = j.file_id "
-            f"WHERE j.state = 'done' AND {NEWEST} ORDER BY j.updated_at DESC LIMIT :n",
+            f"WHERE j.state = 'done' AND {NEWEST} AND {SCOPE} ORDER BY j.updated_at DESC LIMIT :n",
             n=RECENT_LIMIT,
         )
     ]
@@ -160,7 +186,7 @@ def get_ingestion_progress(session: Session, raw_dir: str, pipeline_limit: int =
     converting_since: dict[int, tuple[str, int, datetime]] = {}
     for file_id, path, size, created_at in rows(
         f"SELECT f.id, f.path, f.size_bytes, j.created_at FROM files f JOIN jobs j ON j.file_id = f.id "
-        f"WHERE f.status = 'discovered' AND j.state = 'running' AND j.job_type LIKE 'convert%' AND {NEWEST}"
+        f"WHERE f.status IN ('discovered', 'ocr') AND j.state = 'running' AND j.job_type LIKE 'convert%' AND {NEWEST} AND {SCOPE}"
     ):
         if file_id not in converting_since or created_at < converting_since[file_id][2]:
             converting_since[file_id] = (path, size, created_at)
@@ -194,7 +220,7 @@ def get_ingestion_progress(session: Session, raw_dir: str, pipeline_limit: int =
         listed(file_id, path, size, "queued", discovered_at)
         for file_id, path, size, discovered_at in rows(
             f"SELECT f.id, f.path, f.size_bytes, f.discovered_at FROM files f "
-            f"WHERE f.status = 'discovered' AND NOT {CONVERTING} "
+            f"WHERE f.status IN ('discovered', 'ocr') AND NOT {CONVERTING} AND {SCOPE} "
             f"ORDER BY f.discovered_at NULLS LAST, f.id LIMIT :n",
             n=pipeline_limit,
         )
@@ -208,7 +234,7 @@ def get_ingestion_progress(session: Session, raw_dir: str, pipeline_limit: int =
         for file_id, path, updated_at in rows(
             f"SELECT j.file_id, f.path, j.updated_at FROM jobs j JOIN files f ON f.id = j.file_id "
             f"WHERE j.job_type = 'index' AND j.state = 'done' AND j.updated_at > :cutoff "
-            f"AND f.status IN ('converted', 'summarized') AND {NEWEST} ORDER BY j.updated_at DESC",
+            f"AND f.status IN ('converted', 'summarized') AND {NEWEST} AND {SCOPE} ORDER BY j.updated_at DESC",
             cutoff=now - READY_WINDOW,
         )
     ]
@@ -233,6 +259,6 @@ def get_ingestion_progress(session: Session, raw_dir: str, pipeline_limit: int =
         # summarized -- the UI needs to know which to count.
         "summaries_enabled": settings.auto_summarize,
         "paused": is_paused(),
-        "scan": scan_status.read(),
+        "scan": _scan_covering(scan_status.read(), folder),
         "docling": docling_status(),
     }

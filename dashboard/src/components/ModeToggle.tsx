@@ -10,6 +10,10 @@ const TONE = {
     on: "border-[var(--report)] bg-[var(--report-soft)] font-medium text-[var(--report)]",
     off: "border-[var(--report)]/40 text-[var(--report)] hover:border-[var(--report)] hover:bg-[var(--report-soft)]",
   },
+  correlate: {
+    on: "border-[var(--index)] bg-[var(--index-soft)] font-medium text-[var(--index)]",
+    off: "border-[var(--index)]/40 text-[var(--index)] hover:border-[var(--index)] hover:bg-[var(--index-soft)]",
+  },
   sheet: {
     on: "border-[var(--xlsx)] bg-[var(--xlsx-soft)] font-medium text-[var(--xlsx)]",
     off: "border-[var(--xlsx)]/40 text-[var(--xlsx)] hover:border-[var(--xlsx)] hover:bg-[var(--xlsx-soft)]",

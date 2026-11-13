@@ -55,7 +55,8 @@ def convert_and_store(
         **extra_metadata,
         "source_path": str(file_path),
         "engine": result.engine,
-        "engine_metadata": result.engine_metadata,
+        # per-message email rows go to the database (app/ingestion/email_store.py), not into this file
+        "engine_metadata": {k: v for k, v in result.engine_metadata.items() if k != "messages"},
         "char_count": len(result.markdown),
         "converted_at": datetime.now(timezone.utc).isoformat(),
     }

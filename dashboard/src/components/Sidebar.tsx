@@ -295,69 +295,6 @@ export function Sidebar() {
       className={`shrink-0 overflow-y-auto border-b border-[var(--line)] px-4 py-4 lg:fixed lg:bottom-0 lg:left-0 lg:z-10 lg:w-[220px] lg:border-b-0 lg:border-r ${SIDEBAR_TOP_CLASS}`}
     >
       <div>
-        <Link
-          to="/ask"
-          className="flex items-center gap-1.5 rounded px-3 py-1.5 text-[14px] text-[var(--ink-soft)] transition-colors hover:bg-[var(--index-soft)] hover:text-[var(--ink)]"
-        >
-          <MessageSquarePlus size={14} /> New chat
-        </Link>
-        {conversations.length > 0 && (
-          <div className="mt-2 flex flex-col gap-1.5">
-            {conversations.map((c) => {
-              const active = c.conversation_id === activeConversationId;
-              const confirming = confirmingId === c.conversation_id;
-              const iconButton = "cursor-pointer rounded p-1 text-[var(--ink-soft)] hover:text-[var(--ink)]";
-              return (
-                <div
-                  key={c.conversation_id}
-                  // Every chat is a light bordered card (a faint tint of the text color over
-                  // the page, so it works in light and dark mode); hover deepens it a little,
-                  // and the open chat switches to the accent colors so it stands apart.
-                  className={`group flex items-center rounded border transition-colors ${
-                    active
-                      ? "border-[var(--index)] bg-[var(--index-soft)] text-[var(--index)]"
-                      : "border-[var(--line)] bg-[color-mix(in_srgb,var(--ink)_4%,var(--paper))] text-[var(--ink-soft)] hover:border-[var(--ink-soft)] hover:bg-[color-mix(in_srgb,var(--ink)_8%,var(--paper))] hover:text-[var(--ink)]"
-                  }`}
-                >
-                  <Link
-                    to={`/ask?c=${c.conversation_id}`}
-                    title={c.title}
-                    className={`flex min-w-0 flex-1 items-center gap-1.5 px-3 py-1.5 text-[12.5px] ${active ? "font-medium" : ""}`}
-                  >
-                    {c.pinned && <Pin size={11} className="shrink-0 text-[var(--index)]" />}
-                    <span className="truncate">{c.title}</span>
-                  </Link>
-                  {confirming ? (
-                    <span className="flex shrink-0 items-center pr-1">
-                      <button
-                        title="Confirm delete"
-                        onClick={() => removeConversation(c.conversation_id)}
-                        className={`${iconButton} !text-[var(--danger)]`}
-                      >
-                        <Check size={13} />
-                      </button>
-                      <button title="Cancel" onClick={() => setConfirmingId(null)} className={iconButton}>
-                        <X size={13} />
-                      </button>
-                    </span>
-                  ) : (
-                    <span className="flex shrink-0 items-center pr-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-                      <button title={c.pinned ? "Unpin chat" : "Pin chat"} onClick={() => togglePin(c)} className={iconButton}>
-                        {c.pinned ? <PinOff size={13} /> : <Pin size={13} />}
-                      </button>
-                      <button title="Delete chat" onClick={() => setConfirmingId(c.conversation_id)} className={iconButton}>
-                        <Trash2 size={13} />
-                      </button>
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      <div className="mt-5 border-t border-[var(--line)] pt-4">
         <div className="flex items-center gap-1.5">
           <span className={label}>Scope</span>
           <button
@@ -445,6 +382,69 @@ export function Sidebar() {
           <p className={`mt-2 text-xs ${muted}`}>chatting directly with the model</p>
         )}
       </div>
+      <div className="mt-5 border-t border-[var(--line)] pt-4">
+        <Link
+          to="/ask"
+          className="flex items-center gap-1.5 rounded px-3 py-1.5 text-[14px] text-[var(--ink-soft)] transition-colors hover:bg-[var(--index-soft)] hover:text-[var(--ink)]"
+        >
+          <MessageSquarePlus size={14} /> New chat
+        </Link>
+        {conversations.length > 0 && (
+          <div className="mt-2 flex flex-col gap-1.5">
+            {conversations.map((c) => {
+              const active = c.conversation_id === activeConversationId;
+              const confirming = confirmingId === c.conversation_id;
+              const iconButton = "cursor-pointer rounded p-1 text-[var(--ink-soft)] hover:text-[var(--ink)]";
+              return (
+                <div
+                  key={c.conversation_id}
+                  // Every chat is a light bordered card (a faint tint of the text color over
+                  // the page, so it works in light and dark mode); hover deepens it a little,
+                  // and the open chat switches to the accent colors so it stands apart.
+                  className={`group flex items-center rounded border transition-colors ${
+                    active
+                      ? "border-[var(--index)] bg-[var(--index-soft)] text-[var(--index)]"
+                      : "border-[var(--line)] bg-[color-mix(in_srgb,var(--ink)_4%,var(--paper))] text-[var(--ink-soft)] hover:border-[var(--ink-soft)] hover:bg-[color-mix(in_srgb,var(--ink)_8%,var(--paper))] hover:text-[var(--ink)]"
+                  }`}
+                >
+                  <Link
+                    to={`/ask?c=${c.conversation_id}`}
+                    title={c.title}
+                    className={`flex min-w-0 flex-1 items-center gap-1.5 px-3 py-1.5 text-[12.5px] ${active ? "font-medium" : ""}`}
+                  >
+                    {c.pinned && <Pin size={11} className="shrink-0 text-[var(--index)]" />}
+                    <span className="truncate">{c.title}</span>
+                  </Link>
+                  {confirming ? (
+                    <span className="flex shrink-0 items-center pr-1">
+                      <button
+                        title="Confirm delete"
+                        onClick={() => removeConversation(c.conversation_id)}
+                        className={`${iconButton} !text-[var(--danger)]`}
+                      >
+                        <Check size={13} />
+                      </button>
+                      <button title="Cancel" onClick={() => setConfirmingId(null)} className={iconButton}>
+                        <X size={13} />
+                      </button>
+                    </span>
+                  ) : (
+                    <span className="flex shrink-0 items-center pr-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                      <button title={c.pinned ? "Unpin chat" : "Pin chat"} onClick={() => togglePin(c)} className={iconButton}>
+                        {c.pinned ? <PinOff size={13} /> : <Pin size={13} />}
+                      </button>
+                      <button title="Delete chat" onClick={() => setConfirmingId(c.conversation_id)} className={iconButton}>
+                        <Trash2 size={13} />
+                      </button>
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}
       {newFolderOpen && <NewFolderModal onClose={() => setNewFolderOpen(false)} onCreate={createFolder} />}
     </aside>

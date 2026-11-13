@@ -18,9 +18,11 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { api, ApiError, type DocumentRow, type FolderStatus } from "../api/client";
 import { DeleteAllConfirm } from "../components/DeleteAllConfirm";
+import { EmailSearch } from "../components/EmailSearch";
 import { FolderTree } from "../components/FolderTree";
 import { Pagination } from "../components/Pagination";
 import { button, buttonSecondary, errorText, input, label, muted, pageTitle, tableCell, tableHeader } from "../ui";
@@ -155,7 +157,7 @@ export function Documents() {
   const [status, setStatus] = useState("");
   const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<ReactNode>(null);
 
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
@@ -170,7 +172,12 @@ export function Documents() {
 
   const [targetFolder, setTargetFolder] = useState("");
   const [uploading, setUploading] = useState(false);
-  const [ingesting, setIngesting] = useState(false);
+  // what the right-hand column shows: the document table, or the email search
+  const [view, setView] = useState<"files" | "emails">("files");
+  // share of the upload sent so far (0 to 1), or null when no upload is running
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  // the folder being ingested ("" = all of raw/), or null when nothing is running
+  const [ingestingFolder, setIngestingFolder] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -362,7 +369,7 @@ export function Documents() {
     setError(null);
     setNotice(null);
     try {
-      const r = await api.uploadDocuments(uploadTarget, files);
+      const r = await api.uploadDocuments(uploadTarget, files, (fraction) => setUploadProgress(fraction));
       setNotice(
         `Added ${r.uploaded.length} ${r.uploaded.length === 1 ? "file" : "files"} to “${r.folder}”. They are being processed.` +
           (skipped.length > 0 ? ` ${skippedMessage(skipped)}` : ""),
@@ -373,28 +380,37 @@ export function Documents() {
       reportError(err);
     } finally {
       setUploading(false);
+      setUploadProgress(null);
     }
   };
 
-  // Files copied straight into the shared raw/ folder: scan the library for
-  // them, then queue conversion. Both steps skip files that are already done.
-  const handleIngest = async () => {
-    setIngesting(true);
+  // Files copied straight into the shared raw/ folder: scan for them, then queue
+  // conversion. "" ingests all of raw/; a folder ingests only that folder and its
+  // subfolders. Both steps skip files that are already done.
+  const handleIngest = async (folderPath: string) => {
+    setIngestingFolder(folderPath);
     setError(null);
     setNotice(null);
     try {
-      const scan = await api.ingestScan();
-      const { enqueued } = await api.ingestConvert();
+      const scan = await api.ingestScan(folderPath);
+      const { enqueued } = await api.ingestConvert(folderPath);
       const queued = Object.values(enqueued).reduce((sum, n) => sum + n, 0);
+      const where = folderPath ? `“${folderPath}”` : "all folders";
       setNotice(
-        `Scanned ${scan.total_files.toLocaleString()} files. ${queued} ${queued === 1 ? "file" : "files"} queued for conversion.`,
+        <>
+          Ingested {where}: scanned {scan.total_files.toLocaleString()} files, {queued}{" "}
+          {queued === 1 ? "file" : "files"} queued for conversion.{" "}
+          <Link to={`/progress${folderPath ? `?folder=${encodeURIComponent(folderPath)}` : ""}`} className="underline underline-offset-2">
+            View progress
+          </Link>
+        </>,
       );
       await load();
       loadFolders();
     } catch (err) {
       reportError(err);
     } finally {
-      setIngesting(false);
+      setIngestingFolder(null);
     }
   };
 
@@ -468,22 +484,76 @@ export function Documents() {
         </button>
         <button
           type="button"
-          onClick={() => void handleIngest()}
-          disabled={ingesting}
-          title="Scan the shared raw folder for files copied in from outside the app"
+          onClick={() => void handleIngest("")}
+          disabled={ingestingFolder !== null}
+          title="Scan the whole shared raw folder for files copied in from outside the app"
           className={`${buttonSecondary} inline-flex items-center gap-1.5`}
         >
-          {ingesting ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Ingest new files
+          {ingestingFolder === "" ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Ingest new files
         </button>
       </div>
 
+      {/* One bar for the whole upload: every file in it counts toward the same total. */}
+      {uploadProgress !== null && (
+        <div className="mt-3">
+          <div className={`flex items-baseline justify-between text-xs ${muted}`}>
+            <span>Uploading to “{uploadTarget}”…</span>
+            <span className="tabular-nums">{Math.round(uploadProgress * 100)}%</span>
+          </div>
+          <div
+            role="progressbar"
+            aria-label="Upload progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(uploadProgress * 100)}
+            className="mt-1 h-2 overflow-hidden rounded bg-[var(--line)]"
+          >
+            <div className="h-full bg-[var(--index)] transition-[width] duration-200" style={{ width: `${uploadProgress * 100}%` }} />
+          </div>
+        </div>
+      )}
+
       <div className="mt-5 grid gap-5 lg:grid-cols-[250px_minmax(0,1fr)]">
         <aside className="lg:sticky lg:top-20 lg:max-h-[calc(100vh-7rem)] lg:self-start lg:overflow-y-auto">
-          <FolderTree selected={folder} onSelect={changeFolder} refreshKey={treeKey} />
+          <FolderTree
+            selected={folder}
+            onSelect={changeFolder}
+            refreshKey={treeKey}
+            onIngest={(path) => void handleIngest(path)}
+            ingesting={ingestingFolder}
+          />
         </aside>
 
         <div className="min-w-0">
-      <div className="flex flex-wrap items-center gap-2">
+      {/* Files lists every document; Emails searches the messages inside email files. */}
+      <div className="flex items-center gap-1 text-xs">
+        {(
+          [
+            ["files", "Files"],
+            ["emails", "Emails"],
+          ] as const
+        ).map(([key, text]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setView(key)}
+            aria-pressed={view === key}
+            className={`cursor-pointer rounded px-2.5 py-1 ${
+              view === key
+                ? "bg-[var(--index-soft)] font-medium text-[var(--index)]"
+                : "text-[var(--ink-soft)] hover:text-[var(--ink)]"
+            }`}
+          >
+            {text}
+          </button>
+        ))}
+      </div>
+
+      {view === "emails" && <EmailSearch folder={folder} />}
+
+      {view === "files" && (
+      <>
+      <div className="flex flex-wrap items-center gap-2 mt-3">
         <input
           className={`${input} w-60`}
           placeholder="Search path, title or author"
@@ -696,6 +766,8 @@ export function Documents() {
 
       {total > 0 && (
         <Pagination page={page} pageSize={pageSize} total={total} onPage={setPage} onPageSize={setPageSize} />
+      )}
+      </>
       )}
         </div>
       </div>

@@ -22,6 +22,8 @@ STALE_AFTER_S = 600
 _TTL_S = 24 * 3600
 
 _started_at: str | None = None
+# which folder the running scan covers ("" = all of raw/)
+_folder: str = ""
 
 
 def _client(client=None):
@@ -43,15 +45,19 @@ def _write(payload: dict, client=None) -> None:
         logger.warning("could not write the scan status", exc_info=True)
 
 
-def begin(client=None) -> None:
-    global _started_at
+def begin(client=None, folder: str = "") -> None:
+    global _started_at, _folder
     _started_at = _now().isoformat()
-    _write({"active": True, "files_seen": 0, "started_at": _started_at, "updated_at": time.time()}, client)
+    _folder = folder
+    _write(
+        {"active": True, "folder": folder, "files_seen": 0, "started_at": _started_at, "updated_at": time.time()},
+        client,
+    )
 
 
 def update(files_seen: int, client=None) -> None:
     _write(
-        {"active": True, "files_seen": files_seen, "started_at": _started_at, "updated_at": time.time()},
+        {"active": True, "folder": _folder, "files_seen": files_seen, "started_at": _started_at, "updated_at": time.time()},
         client,
     )
 
@@ -60,6 +66,7 @@ def finish(files_seen: int, client=None) -> None:
     _write(
         {
             "active": False,
+            "folder": _folder,
             "files_seen": files_seen,
             "started_at": _started_at,
             "finished_at": _now().isoformat(),

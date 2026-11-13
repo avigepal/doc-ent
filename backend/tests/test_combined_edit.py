@@ -37,7 +37,7 @@ class FakeModel:
                 if "is quiet" in p["text"]
             ]
             return json.dumps({"paragraphs": changed})
-        if system == OPS_SYSTEM_PROMPT:
+        if system.startswith(OPS_SYSTEM_PROMPT):
             return json.dumps(
                 {"operations": [{"op": "insert_after", "id": 2, "style": "paragraph", "text": "A short summary."}]}
             )

@@ -75,7 +75,9 @@ def looks_like_style(message: str) -> bool:
 
 # ---------- operations ----------
 
-TARGETS = ("title", "headings", "body", "lists", "tables", "header_footer", "all", "page")
+TARGETS = ("title", "headings", "body", "lists", "tables", "header_footer", "all", "page", "matching")
+# the look of a run (the text itself), the only settings a "matching" target can change
+RUN_PROPS = {"font", "size", "size_scale", "color", "bold", "italic", "underline", "caps", "highlight"}
 ALIGNMENTS = {"left", "center", "right", "justify"}
 HIGHLIGHTS = {"yellow", "green", "cyan", "magenta", "blue", "red", "gray", "none"}
 
@@ -118,6 +120,7 @@ class StyleOp:
     target: str
     level: int | None = None
     props: dict = field(default_factory=dict)
+    match: str = ""  # for the "matching" target: the text whose runs are changed
 
 
 def _clean_props(raw: dict, target: str, ignored: list[str]) -> dict:
@@ -174,6 +177,8 @@ def _clean_props(raw: dict, target: str, ignored: list[str]) -> dict:
     props = {k: v for k, v in props.items() if v is not None}
     if target == "page":
         allowed = {"margins", "orientation"}
+    elif target == "matching":
+        allowed = set(props) & RUN_PROPS
     elif target == "tables":
         allowed = set(props) - {"margins", "orientation"}
     else:
@@ -198,9 +203,15 @@ def sanitize(plan: dict) -> tuple[list[StyleOp], list[str]]:
             continue
         level = raw.get("level")
         level = level if isinstance(level, int) and not isinstance(level, bool) and 1 <= level <= 9 else None
+        # the model often puts the text to find inside "set" with the settings; take it from either place
+        match = str(raw.get("match") or settings.get("match") or "").strip()[:60]
+        settings = {key: value for key, value in settings.items() if key != "match"}
+        if target == "matching" and not match:
+            ignored.append("matching without text")
+            continue
         props = _clean_props(settings, target, ignored)
         if props:
-            ops.append(StyleOp(target, level if target == "headings" else None, props))
+            ops.append(StyleOp(target, level if target == "headings" else None, props, match if target == "matching" else ""))
     return ops, ignored
 
 
@@ -210,7 +221,10 @@ def describe(ops: list[StyleOp]) -> str:
              "header_footer": "headers and footers", "all": "all text", "page": "the page"}
     parts = []
     for op in ops:
-        name = label[op.target] + (f" (level {op.level})" if op.level else "")
+        if op.target == "matching":
+            name = f'text "{op.match}"'
+        else:
+            name = label[op.target] + (f" (level {op.level})" if op.level else "")
         bits = []
         p = op.props
         if "font" in p:
@@ -256,7 +270,9 @@ STYLE_SYSTEM_PROMPT = (
     "You change how a Word document looks. You get a request and facts about the document, and reply with "
     "JSON only: {\"operations\": [ {\"target\": ..., \"set\": {...}} ]}.\n"
     "targets: title, headings (add \"level\": 1-6 for one level), body, lists, tables, header_footer, all "
-    "(every paragraph), page.\n"
+    "(every paragraph), page, matching (add \"match\": the text to find, copied exactly from the short text in the "
+    "facts, e.g. \"[Company logo]\"; only that text is changed, wherever it is, including in tables; use only the font/colour/bold/italic/underline/caps/"
+    "highlight keys with it).\n"
     "set keys, only the ones the request needs:\n"
     "  font (name), size (points), size_scale (1.2 = 20% bigger), color (#RRGGBB), bold, italic, underline, caps "
     "(true/false), highlight (yellow, green, cyan, magenta, blue, red, gray, none), align (left, center, right, "

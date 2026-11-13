@@ -10,7 +10,7 @@ from __future__ import annotations
 
 def paths_to_prune(known_paths: set[str], on_disk_paths: set[str]) -> set[str]:
     """Records whose file has disappeared. An empty scan prunes nothing:
-    raw/ may be a network mount (see app/tasks/auto_ingest.py) that is
+    raw/ may be a network mount (see the Ingest new files button) that is
     briefly unavailable, and "the share is down" must not look identical
     to "every file was deleted"."""
     if not on_disk_paths:

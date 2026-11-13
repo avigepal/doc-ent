@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ApiError, api } from "../api/client";
 import type { FileSection } from "../api/client";
-import { label, muted } from "../ui";
+import { button, label, muted } from "../ui";
 
 /** What to open: a file (by id or path), optionally at a section, with words to highlight. */
 export interface ViewTarget {
@@ -82,9 +82,61 @@ interface Loaded {
   hasAfter: boolean;
 }
 
+/** The file as it was dropped in: PDFs and images show in place, anything else is a download. */
+function OriginalPane({ name, fileId, path }: { name: string; fileId?: number; path?: string }) {
+  const [file, setFile] = useState<{ blob: Blob; url: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let url: string | null = null;
+    setFile(null);
+    setError(null);
+    api
+      .fileOriginal({ fileId, path })
+      .then((blob) => {
+        if (cancelled) return;
+        url = URL.createObjectURL(blob);
+        setFile({ blob, url });
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof ApiError ? err.message : "Couldn't load the original file.");
+      });
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [fileId, path]);
+
+  if (error) return <p className="px-5 py-4 font-mono text-xs text-[var(--danger)]">{error}</p>;
+  if (!file)
+    return (
+      <p className={`flex items-center gap-2 px-5 py-4 text-[14px] ${muted}`}>
+        <Loader2 size={14} className="animate-spin" /> Loading the original file…
+      </p>
+    );
+  if (file.blob.type === "application/pdf")
+    return <iframe title={`Original: ${name}`} src={file.url} className="min-h-0 flex-1 border-0" />;
+  if (file.blob.type.startsWith("image/"))
+    return (
+      <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
+        <img src={file.url} alt={name} className="mx-auto max-w-full" />
+      </div>
+    );
+  return (
+    <div className="space-y-3 px-5 py-4">
+      <p className={`text-[14px] ${muted}`}>This file type can’t be shown in the browser.</p>
+      <a href={file.url} download={name} className={`${button} inline-block`}>
+        Download original
+      </a>
+    </div>
+  );
+}
+
 function Viewer({ target, onClose }: { target: ViewTarget; onClose: () => void }) {
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<"text" | "original">("text");
   const [loadingMore, setLoadingMore] = useState<"before" | "after" | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   // where to put the scroll position after the next render: the opening section, or unchanged when earlier sections are added above
@@ -212,7 +264,32 @@ function Viewer({ target, onClose }: { target: ViewTarget; onClose: () => void }
           </button>
         </header>
 
-        <div ref={scroller} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
+        <div className="flex gap-1 border-b border-[var(--line)] px-5 py-2 text-xs">
+          {(
+            [
+              ["text", "Text"],
+              ["original", "Original file"],
+            ] as const
+          ).map(([key, text]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setTab(key)}
+              aria-pressed={tab === key}
+              className={`cursor-pointer rounded px-2.5 py-1 ${
+                tab === key
+                  ? "bg-[var(--index-soft)] font-medium text-[var(--index)]"
+                  : "text-[var(--ink-soft)] hover:text-[var(--ink)]"
+              }`}
+            >
+              {text}
+            </button>
+          ))}
+        </div>
+
+        {tab === "original" && <OriginalPane name={data?.name ?? "document"} fileId={target.fileId} path={target.path} />}
+
+        <div ref={scroller} hidden={tab !== "text"} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
           {error && <p className="font-mono text-xs text-[var(--danger)]">{error}</p>}
           {!data && !error && (
             <p className={`flex items-center gap-2 text-[14px] ${muted}`}>

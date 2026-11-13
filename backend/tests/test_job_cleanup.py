@@ -8,7 +8,7 @@ def test_each_worker_queue_maps_to_the_job_types_it_runs():
 
 
 def test_unrelated_queues_close_nothing():
-    assert job_types_for_queues(["auto_ingest", "reduce"]) == []
+    assert job_types_for_queues(["reduce"]) == []
 
 
 def test_multiple_queues_combine_without_duplicates():

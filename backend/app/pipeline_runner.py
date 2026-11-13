@@ -1,9 +1,8 @@
-"""Shared scan/convert/summarize logic used by both the manual /ingest/*
-endpoints (app/main.py) and the automatic periodic task (app/tasks/
-auto_ingest.py). Keeping it here means "click the button" and "wait for
-the next tick" always do exactly the same thing.
+"""Shared scan/convert/summarize logic used by the /ingest/* endpoints
+(app/main.py) and so by the Ingest button. Keeping it here means every
+caller does exactly the same thing.
 
-The timer runs every minute, so everything here is built to be cheap and
+A scan runs on demand, so everything here is built to be cheap and
 idempotent on a corpus where nothing changed: unchanged files aren't
 re-hashed, files already queued aren't queued again (see queue_guard.py),
 and a file whose content changed is sent back through the pipeline.
@@ -22,6 +21,7 @@ from sqlalchemy.orm import Session
 from app import scan_status
 from app.config import settings
 from app.ingestion.prune import paths_to_prune
+from app.ingestion.scope import clean_folder, folder_dir, scope_prefix
 from app.ingestion.walker import KnownFile, ScannedFile, scan_directory, scan_file
 from app.models import ChunkRecord, FileRecord, JobRecord
 from app.queue_guard import clear_enqueued, enqueue_once
@@ -150,8 +150,12 @@ def _reprocess_changed(session: Session, paths: list[str]) -> None:
 SCAN_BATCH = 200
 
 
-def run_scan(session: Session) -> dict:
+def run_scan(session: Session, folder: str = "") -> dict:
+    """Scan raw/ (folder="") or one folder under it, with its subfolders. Only
+    records under that folder are pruned, so a folder scan never touches the rest."""
     raw_dir = Path(settings.data_dir) / "raw"
+    scope_dir = folder_dir(raw_dir, folder)
+    prefix = scope_prefix(raw_dir, folder)
     known, statuses = _load_known(session)
 
     seen: set[str] = set()
@@ -174,9 +178,9 @@ def run_scan(session: Session) -> dict:
         scan_status.update(len(seen))
         batch.clear()
 
-    scan_status.begin()
+    scan_status.begin(folder=clean_folder(folder))
     try:
-        for f in scan_directory(raw_dir, known):
+        for f in scan_directory(scope_dir, known):
             seen.add(f.path)
             total_bytes += f.size_bytes
             by_queue[f.queue] += 1
@@ -189,7 +193,9 @@ def run_scan(session: Session) -> dict:
         # jobs and chunks go with the file (ON DELETE CASCADE), so a deleted
         # file's failed job stops flagging its folder. Only a scan that walked
         # everything prunes: one that died halfway never reaches this point.
-        current = set(session.execute(select(FileRecord.path)).scalars())
+        current = set(
+            session.execute(select(FileRecord.path).where(FileRecord.path.startswith(prefix, autoescape=True))).scalars()
+        )
         stale = paths_to_prune(current, seen)
         if stale:
             session.execute(delete(FileRecord).where(FileRecord.path.in_(stale)))
@@ -198,7 +204,8 @@ def run_scan(session: Session) -> dict:
         scan_status.finish(len(seen))
 
     return {
-        "raw_dir": str(raw_dir),
+        "raw_dir": str(scope_dir),
+        "folder": clean_folder(folder),
         "total_files": len(seen),
         "total_bytes": total_bytes,
         "by_queue": dict(by_queue),
@@ -223,27 +230,38 @@ def register_files(session: Session, paths: list[Path]) -> list[int]:
 
 
 def run_convert_enqueue(
-    session: Session, file_ids: list[int] | None = None, queue: str | None = None
+    session: Session, file_ids: list[int] | None = None, queue: str | None = None, folder: str = ""
 ) -> dict[str, int]:
     """Queue conversion for every "discovered" file, or -- when file_ids is
     given -- only for those (the upload path, which also passes `queue` to
-    use its dedicated lane). A file already queued within the dedupe window
-    is skipped; the counts are of tasks actually queued."""
-    from app.tasks.convert import convert_email_archive, convert_fast, convert_vision
+    use its dedicated lane). `folder` limits it to one folder under raw/. A
+    file already queued within the dedupe window is skipped; the counts are
+    of tasks actually queued."""
+    from app.tasks.convert import convert_email_archive, convert_fast, convert_ocr, convert_vision
 
+    prefix = scope_prefix(Path(settings.data_dir) / "raw", folder) if folder else ""
     task_by_queue = {
         "convert_fast": convert_fast,
         "convert_email_archive": convert_email_archive,
         "convert_vision": convert_vision,
     }
 
-    enqueued: dict[str, int] = {}
-    for file_queue, task in task_by_queue.items():
-        query = select(FileRecord.id).where(FileRecord.queue == file_queue, FileRecord.status == "discovered")
+    def scoped(query):
         if file_ids is not None:
             query = query.where(FileRecord.id.in_(file_ids))
-        rows = session.execute(query).scalars().all()
+        if folder:
+            query = query.where(FileRecord.path.startswith(prefix, autoescape=True))
+        return session.execute(query).scalars().all()
+
+    enqueued: dict[str, int] = {}
+    for file_queue, task in task_by_queue.items():
+        rows = scoped(select(FileRecord.id).where(FileRecord.queue == file_queue, FileRecord.status == "discovered"))
         enqueued[file_queue] = sum(1 for file_id in rows if enqueue_once(task, file_id, queue=queue))
+
+    # PDFs that no reader could get text from wait in status "ocr" (see
+    # app/tasks/convert.py); queueing them again here recovers a lost enqueue.
+    ocr_rows = scoped(select(FileRecord.id).where(FileRecord.status == "ocr"))
+    enqueued["convert_ocr"] = sum(1 for file_id in ocr_rows if enqueue_once(convert_ocr, file_id))
 
     return enqueued
 

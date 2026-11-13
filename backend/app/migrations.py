@@ -98,6 +98,8 @@ _STATEMENTS = [
     "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS route TEXT NOT NULL DEFAULT ''",
     # Related questions shown under an answer, so a restored chat still has them.
     "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS suggestions JSONB",
+    # The relation chart (who is linked to whom in the emails), restored with the answer after a reload.
+    "ALTER TABLE query_history ADD COLUMN IF NOT EXISTS graph JSONB",
     "CREATE INDEX IF NOT EXISTS idx_query_history_created_at ON query_history (created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_query_history_conversation_id ON query_history (conversation_id, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_export_history_created_at ON export_history (created_at DESC)",
@@ -128,6 +130,24 @@ _STATEMENTS = [
     # latest job of a file and type (the Progress page asks this for every file)
     "CREATE INDEX IF NOT EXISTS idx_jobs_file_type_id ON jobs (file_id, job_type, id DESC)",
     "CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks USING hnsw (embedding vector_cosine_ops)",
+    # who wrote to whom (one row per message and recipient), for "who mailed whom"
+    """
+    CREATE TABLE IF NOT EXISTS email_links (
+        id             BIGSERIAL PRIMARY KEY,
+        file_id        BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        msg_index      INT NOT NULL DEFAULT 0,
+        subject        TEXT NOT NULL DEFAULT '',
+        sent_at        TIMESTAMPTZ,
+        sender_name    TEXT NOT NULL DEFAULT '',
+        sender_addr    TEXT NOT NULL DEFAULT '',
+        recipient_name TEXT NOT NULL DEFAULT '',
+        recipient_addr TEXT NOT NULL DEFAULT '',
+        kind           TEXT NOT NULL DEFAULT 'to'
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_email_links_file_id ON email_links (file_id)",
+    "CREATE INDEX IF NOT EXISTS idx_email_links_sender ON email_links (sender_addr)",
+    "CREATE INDEX IF NOT EXISTS idx_email_links_recipient ON email_links (recipient_addr)",
 ]
 
 

@@ -12,16 +12,25 @@ converts it to mbox files first, which are then parsed the normal way.
 
 from __future__ import annotations
 
+import email
 import mailbox
 import shutil
 import subprocess
 import tempfile
 from datetime import datetime
-from email.message import Message
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from app.conversion.backends import ConversionResult
+from app.conversion.email_parse import (
+    POLICY,
+    ParsedMessage,
+    Person,
+    dedupe,
+    parse_message,
+    people_from_strings,
+    render_message,
+)
 
 
 def _extract_msg_module():
@@ -32,87 +41,70 @@ def _extract_msg_module():
     return extract_msg
 
 
-def _body_text(msg: Message) -> str:
-    if msg.is_multipart():
-        for part in msg.walk():
-            if part.get_content_type() == "text/plain" and not part.get_filename():
-                payload = part.get_payload(decode=True)
-                if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    return payload.decode(charset, errors="replace")
-        return ""
-
-    payload = msg.get_payload(decode=True)
-    if payload is None:
-        return msg.get_payload() or ""
-    charset = msg.get_content_charset() or "utf-8"
-    return payload.decode(charset, errors="replace")
+def _read_message(fh) -> ParsedMessage:
+    return parse_message(email.message_from_binary_file(fh, policy=POLICY))
 
 
-def _render_message(subject: str, sender: str, to: str, date: str, body: str) -> str:
-    return (
-        f"## {subject}\n\n"
-        f"**From:** {sender}  \n"
-        f"**To:** {to}  \n"
-        f"**Date:** {date}\n\n"
-        f"{body.strip()}\n"
-    )
-
-
-def _convert_eml(path: Path) -> tuple[str, int]:
-    import email
-
+def _convert_eml(path: Path) -> tuple[str, list[ParsedMessage]]:
     with path.open("rb") as fh:
-        msg = email.message_from_binary_file(fh)
-
-    section = _render_message(
-        subject=msg.get("Subject", "(no subject)"),
-        sender=msg.get("From", "(unknown sender)"),
-        to=msg.get("To", "(unknown recipient)"),
-        date=msg.get("Date", "(unknown date)"),
-        body=_body_text(msg),
-    )
-    return section, 1
+        message = _read_message(fh)
+    return render_message(message), [message]
 
 
-def _convert_mbox(path: Path) -> tuple[str, int]:
-    box = mailbox.mbox(str(path))
+def _mbox_messages(path: Path) -> list[ParsedMessage]:
+    box = mailbox.mbox(str(path), factory=lambda fh: email.message_from_binary_file(fh, policy=POLICY))
     try:
-        sections = []
-        count = 0
-        for msg in box:
-            sections.append(
-                _render_message(
-                    subject=msg.get("Subject", "(no subject)"),
-                    sender=msg.get("From", "(unknown sender)"),
-                    to=msg.get("To", "(unknown recipient)"),
-                    date=msg.get("Date", "(unknown date)"),
-                    body=_body_text(msg),
-                )
-            )
-            count += 1
-        return "\n---\n\n".join(sections), count
+        return [parse_message(msg) for msg in box]
     finally:
         box.close()
 
 
-def _convert_msg(path: Path) -> tuple[str, int]:
+def _convert_mbox(path: Path) -> tuple[str, list[ParsedMessage]]:
+    messages = _mbox_messages(path)
+    return "\n---\n\n".join(render_message(m) for m in messages), messages
+
+
+def _msg_datetime(value) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return parsedate_to_datetime(str(value))
+    except (TypeError, ValueError, IndexError):
+        try:
+            return datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+
+
+def _convert_msg(path: Path) -> tuple[str, list[ParsedMessage]]:
     extract_msg = _extract_msg_module()
     msg = extract_msg.Message(str(path))
     try:
-        section = _render_message(
-            subject=msg.subject or "(no subject)",
-            sender=msg.sender or "(unknown sender)",
-            to=msg.to or "(unknown recipient)",
-            date=str(msg.date) if msg.date else "(unknown date)",
+        sender = people_from_strings([msg.sender or ""])
+        sent_at = _msg_datetime(msg.date)
+        names = []
+        try:
+            names = [a.longFilename or a.shortFilename for a in (msg.attachments or [])]
+        except Exception:
+            pass
+        message = ParsedMessage(
+            subject=" ".join((msg.subject or "").split()),
+            sender=sender[0] if sender else (Person(msg.sender.strip(), "") if msg.sender else None),
+            to=dedupe(people_from_strings([msg.to or ""])),
+            cc=dedupe(people_from_strings([getattr(msg, "cc", "") or ""])),
+            sent_at=sent_at,
+            date_text=str(msg.date) if msg.date else "",
             body=msg.body or "",
+            attachments=[n for n in names if n],
         )
-        return section, 1
+        return render_message(message), [message]
     finally:
         msg.close()
 
 
-def _convert_pst(path: Path) -> tuple[str, int]:
+def _convert_pst(path: Path) -> tuple[str, list[ParsedMessage]]:
     if shutil.which("readpst") is None:
         raise RuntimeError(
             "readpst binary not found on PATH. Install pst-utils/libpff "
@@ -126,15 +118,15 @@ def _convert_pst(path: Path) -> tuple[str, int]:
             capture_output=True,
         )
         sections: list[str] = []
-        total = 0
+        messages: list[ParsedMessage] = []
         for mbox_file in sorted(Path(out_dir).rglob("*")):
             if not mbox_file.is_file():
                 continue
-            text, count = _convert_mbox(mbox_file)
+            text, found = _convert_mbox(mbox_file)
             if text:
                 sections.append(text)
-            total += count
-        return "\n---\n\n".join(sections), total
+            messages.extend(found)
+        return "\n---\n\n".join(sections), messages
 
 
 _CONVERTERS = {
@@ -145,41 +137,6 @@ _CONVERTERS = {
 }
 
 
-def _extract_eml_metadata(path: Path) -> dict:
-    import email
-
-    with path.open("rb") as fh:
-        msg = email.message_from_binary_file(fh)
-
-    doc_created_at = None
-    date_header = msg.get("Date")
-    if date_header:
-        try:
-            doc_created_at = parsedate_to_datetime(date_header).isoformat()
-        except (TypeError, ValueError):
-            pass
-
-    return {"title": msg.get("Subject"), "author": msg.get("From"), "doc_created_at": doc_created_at}
-
-
-def _extract_msg_metadata(path: Path) -> dict:
-    extract_msg = _extract_msg_module()
-    msg = extract_msg.Message(str(path))
-    try:
-        doc_created_at = None
-        if msg.date:
-            if isinstance(msg.date, datetime):
-                doc_created_at = msg.date.isoformat()
-            else:
-                try:
-                    doc_created_at = parsedate_to_datetime(str(msg.date)).isoformat()
-                except (TypeError, ValueError):
-                    doc_created_at = str(msg.date)
-        return {"title": msg.subject, "author": msg.sender, "doc_created_at": doc_created_at}
-    finally:
-        msg.close()
-
-
 class EmailArchiveBackend:
     def convert(self, path: Path) -> ConversionResult:
         suffix = path.suffix.lower()
@@ -187,14 +144,24 @@ class EmailArchiveBackend:
         if converter is None:
             raise ValueError(f"unsupported email archive extension: {suffix}")
 
-        markdown, message_count = converter(path)
-        engine_metadata = {"message_count": message_count, "source_format": suffix.lstrip(".")}
+        markdown, messages = converter(path)
+        engine_metadata: dict = {
+            "message_count": len(messages),
+            "source_format": suffix.lstrip("."),
+            # who wrote to whom, per message: stored as rows by the convert task (see ingestion/email_store.py)
+            "messages": [m.as_row(i) for i, m in enumerate(messages)],
+        }
 
         # title/author/doc_created_at only make sense for a single message —
         # .mbox/.pst can hold many, so there's no one answer for those.
-        if suffix == ".eml" and message_count == 1:
-            engine_metadata.update(_extract_eml_metadata(path))
-        elif suffix == ".msg" and message_count == 1:
-            engine_metadata.update(_extract_msg_metadata(path))
+        if suffix in (".eml", ".msg") and len(messages) == 1:
+            only = messages[0]
+            engine_metadata.update(
+                {
+                    "title": only.subject or None,
+                    "author": only.sender.label() if only.sender else None,
+                    "doc_created_at": only.sent_at.isoformat() if only.sent_at else None,
+                }
+            )
 
         return ConversionResult(markdown=markdown, engine="email_archive", engine_metadata=engine_metadata)

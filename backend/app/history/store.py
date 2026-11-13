@@ -39,6 +39,7 @@ def record_query(
         grounded=bool(result.get("grounded", False)),
         cross_doc=result.get("cross_doc"),
         statistical=result.get("statistical"),
+        graph=result.get("graph"),
         filter_folders=folders or [],
         filter_author=author,
         filter_title=title,

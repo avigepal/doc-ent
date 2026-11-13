@@ -260,6 +260,7 @@ function historyDetailToEntry(
       grounded: d.grounded,
       cross_doc: d.cross_doc,
       statistical: d.statistical,
+      graph: d.graph ?? null,
       files: d.files ?? [],
       history_id: d.id,
       suggestions: d.suggestions ?? [],
@@ -331,6 +332,8 @@ export function Ask() {
   const [editMode, setEditMode] = useState(false);
   // The Spreadsheet toggle: the next message says what to collect from the documents into an .xlsx.
   const [sheetMode, setSheetMode] = useState(false);
+  // The Correlate toggle: the next message's answer also compares the documents it drew on, across each other.
+  const [correlateMode, setCorrelateMode] = useState(false);
   // something to read: files attached to this chat, or a folder / everything under Scope
   const hasDocuments = attachments.length > 0 || scopeAll || selectedFolders.length > 0;
   // Mirror of `attachments` for the status poll, which outlives renders.
@@ -522,7 +525,7 @@ export function Ask() {
     chatOnly: boolean,
     fileIds: number[] = [],
     beforeHistoryId?: number,
-    mode?: "report" | "edit" | "spreadsheet" | "report_confirmed",
+    mode?: "report" | "edit" | "spreadsheet" | "correlate" | "report_confirmed",
   ) => {
     const controller = new AbortController();
     abortRef.current = controller;
@@ -546,7 +549,7 @@ export function Ask() {
     fileIds: number[],
     beforeHistoryId: number | undefined,
     signal: AbortSignal,
-    mode?: "report" | "edit" | "spreadsheet" | "report_confirmed",
+    mode?: "report" | "edit" | "spreadsheet" | "correlate" | "report_confirmed",
   ) => {
     // what the finished reply turned out to be, for the related questions asked for afterwards
     const got = { answer: "", sources: [] as string[], route: "", historyId: undefined as number | undefined };
@@ -572,7 +575,10 @@ export function Ask() {
           setThread((prev) =>
             prev.map((t) =>
               t.id === entryId
-                ? { ...t, result: { ...t.result, cross_doc: extra.cross_doc, statistical: extra.statistical } }
+                ? {
+                    ...t,
+                    result: { ...t.result, cross_doc: extra.cross_doc, statistical: extra.statistical, graph: extra.graph ?? null },
+                  }
                 : t,
             ),
           ),
@@ -679,7 +685,7 @@ export function Ask() {
     folders: string[],
     chatOnly: boolean,
     fileIds: number[],
-    mode?: "report" | "edit" | "spreadsheet" | "report_confirmed",
+    mode?: "report" | "edit" | "spreadsheet" | "correlate" | "report_confirmed",
   ) => {
     const entryId = crypto.randomUUID();
 
@@ -767,10 +773,13 @@ export function Ask() {
           ? "spreadsheet"
           : reportMode && hasDocuments
             ? "report"
-            : undefined;
+            : correlateMode && hasDocuments
+              ? "correlate"
+              : undefined;
     setReportMode(false);
     setEditMode(false);
     setSheetMode(false);
+    setCorrelateMode(false);
     setQuestion("");
     await askNew(askedQuestion, selectedFolders, chatOnly, fileIds, mode);
   };
@@ -945,6 +954,7 @@ export function Ask() {
           setEditMode((v) => !v);
           setReportMode(false);
           setSheetMode(false);
+          setCorrelateMode(false);
         }}
       />
       <ModeToggle
@@ -963,6 +973,7 @@ export function Ask() {
           setSheetMode((v) => !v);
           setEditMode(false);
           setReportMode(false);
+          setCorrelateMode(false);
         }}
       />
       <ModeToggle
@@ -981,6 +992,26 @@ export function Ask() {
         setReportMode((v) => !v);
         setEditMode(false);
         setSheetMode(false);
+        setCorrelateMode(false);
+      }}
+    />
+    <ModeToggle
+      label="Correlate"
+      tone="correlate"
+      Icon={GitCompare}
+      help="Answer as usual, then compare the documents that answer drew on: how they relate, where they contradict each other, what trends run through them"
+      on={correlateMode && hasDocuments}
+      disabled={!hasDocuments || busy}
+      disabledReason={
+        busy
+          ? "Wait for the current reply to finish"
+          : "Choose a folder under Scope, or attach files, to correlate"
+      }
+      onToggle={() => {
+        setCorrelateMode((v) => !v);
+        setEditMode(false);
+        setSheetMode(false);
+        setReportMode(false);
       }}
     />
     </div>
@@ -1181,6 +1212,8 @@ export function Ask() {
                     ? "What should the spreadsheet contain? e.g. Every invoice with number, date, vendor and total"
                     : reportMode && hasDocuments
                     ? "What should the report cover? e.g. Everything about this person"
+                    : correlateMode && hasDocuments
+                    ? "What should be compared? e.g. How do these contracts differ on payment terms?"
                     : attachments.length > 0
                       ? "Ask about your attached files, or tell me how to change them…"
                       : "e.g. Summarize the Q1 contracts, or how do these numbers relate?"

@@ -95,6 +95,25 @@ def test_stream_query_streams_the_answer_and_leaves_cross_doc_to_the_compare_but
     assert len(llm.calls) == 1  # the answer only; no cross-document call
 
 
+def test_stream_query_with_compare_adds_cross_doc_findings_for_the_same_passages():
+    llm = FakeLLM("they agree", stream_pieces=["they agree"])
+    chunks = [_chunk("a.pdf", "text a"), _chunk("b.pdf", "text b")]
+
+    events = list(stream_query("how do these relate?", chunks, {}, llm, compare=True))
+
+    assert events[-1]["data"]["cross_doc"] == {"answer": "they agree", "sources": ["a.pdf", "b.pdf"]}
+    assert len(llm.calls) == 2  # the answer, then the comparison over the same passages
+
+
+def test_stream_query_with_compare_on_one_file_has_nothing_to_compare():
+    llm = FakeLLM("answer", stream_pieces=["answer"])
+
+    events = list(stream_query("how do these relate?", [_chunk("a.pdf", "text a")], {}, llm, compare=True))
+
+    assert events[-1]["data"]["cross_doc"] is None
+    assert len(llm.calls) == 1
+
+
 def test_stream_query_not_grounded_skips_streaming_and_correlation():
     llm = FakeLLM()
     chunks = [_chunk("a.pdf", "irrelevant", score=0.05)]

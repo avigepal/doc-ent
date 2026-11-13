@@ -18,6 +18,7 @@ from docx import Document
 
 from app.editing.docx_ops import Change, Op, apply_ops, read_blocks
 from app.editing.docx_style import apply_ops as apply_style_ops
+from app.editing.pdf_pages import PageOp, rebuild_pages
 from app.editing.styling import StyleOp
 
 CHANGES_NAME = "changes.json"
@@ -27,13 +28,16 @@ _VERSION = 1
 def save_changes(
     result_path: Path,
     base: Path,
-    ops: list[Op],
+    ops: list,
     changes: list[Change],
     style_ops: list[StyleOp] | None = None,
+    kind: str = "docx",
 ) -> None:
-    """Remember the change list of `result_path` (all changes accepted)."""
+    """Remember the change list of `result_path` (all changes accepted). `kind` is
+    "docx" (exact Word operations) or "pdf" (page operations, pdf_pages.py)."""
     payload = {
         "version": _VERSION,
+        "kind": kind,
         "base": str(base),
         "ops": [asdict(op) for op in ops],
         "style_ops": [asdict(op) for op in style_ops or []],
@@ -90,6 +94,15 @@ def apply_accepted(result_path: Path, accepted: list[int]) -> list[dict]:
     count = len(data["changes"])
     keep = sorted({i for i in accepted if isinstance(i, int) and 0 <= i < count})
     wanted_ops = {data["changes"][i]["op_index"] for i in keep}
+
+    if data.get("kind") == "pdf":
+        ops = [PageOp(**raw) for index, raw in enumerate(data["ops"]) if index in wanted_ops]
+        rebuild_pages(base, result_path.with_name(f"{result_path.stem}.review.pdf"), ops)
+        os.replace(result_path.with_name(f"{result_path.stem}.review.pdf"), result_path)
+        data["accepted"] = keep
+        (result_path.parent / CHANGES_NAME).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return describe_changes(result_path) or []
+
     ops = [Op(**raw) for index, raw in enumerate(data["ops"]) if index in wanted_ops]
 
     doc = Document(str(base))

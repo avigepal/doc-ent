@@ -26,7 +26,7 @@ class FakeModel:
         self.prompts = []
 
     def chat(self, system, user, temperature=0.2, **kwargs):
-        assert system == OPS_SYSTEM_PROMPT
+        assert system.startswith(OPS_SYSTEM_PROMPT)
         self.prompts.append(user)
         return json.dumps(self.reply)
 

@@ -1,10 +1,11 @@
-import { ChevronDown, ChevronRight, CornerDownRight, Download, FileText, FileEdit, Library, Loader2, MessageSquare, ScrollText, Search, Sparkles, X } from "lucide-react";
+import { ChevronDown, ChevronRight, CornerDownRight, Download, FileText, FileEdit, Library, Loader2, Mail, MessageSquare, ScrollText, Search, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { buttonSecondary, card, label, muted } from "../ui";
-import type { FileChange, GeneratedFile } from "../api/client";
+import type { FileChange, GeneratedFile, RelationGraph } from "../api/client";
 import { useViewer } from "./DocumentViewer";
 import { Markdown } from "./Markdown";
+import { RelationChart } from "./RelationChart";
 
 export interface ResultCardData {
   question: string;
@@ -13,6 +14,7 @@ export interface ResultCardData {
   grounded: boolean;
   cross_doc: { answer: string; sources: string[] } | null;
   statistical: { answer: string; correlation_summary: string } | null;
+  graph?: RelationGraph | null;
   files?: GeneratedFile[];
 }
 
@@ -72,6 +74,12 @@ export function AnswerBadge({
       text = "From your library";
       title = "Counted and listed from your document library. No AI model was used.";
       Icon = Library;
+      tone = "border-[var(--line)] text-[var(--ink-soft)]";
+      break;
+    case "emails":
+      text = `From your emails${sourceCount > 0 ? ` · ${sourceCount} ${sourceCount === 1 ? "file" : "files"}` : ""}`;
+      title = "Counted from who wrote to whom in your emails. No AI model was used.";
+      Icon = Mail;
       tone = "border-[var(--line)] text-[var(--ink-soft)]";
       break;
     default:
@@ -516,6 +524,15 @@ export function ResultCard({
           <pre className="font-mono mt-2 whitespace-pre-wrap rounded border border-[var(--line)] bg-[var(--locator-soft)] p-2.5 text-[11px]">
             {result.statistical.correlation_summary}
           </pre>
+        </div>
+      )}
+
+      {result.graph && (
+        <div className="mt-5 border-t border-[var(--line)] pt-4">
+          <p className={label}>Relation chart</p>
+          <div className="mt-2">
+            <RelationChart graph={result.graph} />
+          </div>
         </div>
       )}
 

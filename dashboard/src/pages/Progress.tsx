@@ -1,5 +1,6 @@
 import { AlertCircle, Check, CheckCircle2, Loader2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { api, type IngestionProgress, type PipelineFile, type PipelineStage } from "../api/client";
 import { DoclingStatus } from "../components/DoclingStatus";
 import { PipelineControl } from "../components/PipelineControl";
@@ -94,6 +95,9 @@ function ProgressBar({ total, summarized, converted, failed }: { total: number; 
 }
 
 export function Progress() {
+  // ?folder=sales shows only that folder (and its subfolders); no folder shows all of raw/
+  const [params] = useSearchParams();
+  const folder = params.get("folder") ?? "";
   const [data, setData] = useState<IngestionProgress | null>(null);
   const [failedToLoad, setFailedToLoad] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -129,7 +133,7 @@ export function Progress() {
   useEffect(() => {
     let cancelled = false;
     const poll = () => {
-      api.ingestionProgress(pipelineLimit).then(
+      api.ingestionProgress(pipelineLimit, folder).then(
         (r) => {
           if (cancelled) return;
           setData(r);
@@ -148,7 +152,7 @@ export function Progress() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [pipelineLimit, refreshTick]);
+  }, [pipelineLimit, refreshTick, folder]);
 
   if (!data) {
     return (
@@ -177,7 +181,17 @@ export function Progress() {
   return (
     <div>
       <div className="flex items-center justify-between">
-        <h1 className={pageTitle}>Progress</h1>
+        <div className="min-w-0">
+          <h1 className={pageTitle}>Progress</h1>
+          {folder && (
+            <p className={`mt-1 text-sm ${muted}`}>
+              Showing <span className="font-medium text-[var(--ink)]">{folder}</span> and its subfolders ·{" "}
+              <Link to="/progress" className="text-[var(--index)] underline-offset-2 hover:underline">
+                Show all folders
+              </Link>
+            </p>
+          )}
+        </div>
         <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1">
         <DoclingStatus docling={data.docling} />
         <span className={`flex items-center gap-1.5 text-xs ${failedToLoad ? "text-[var(--danger)]" : muted}`}>
@@ -361,23 +375,24 @@ export function Progress() {
       )}
 
       <p className={`mt-6 ${label}`}>By folder</p>
-      <div className={`${card} mt-2 space-y-4`}>
-        {data.folders.length === 0 && <p className={muted}>No folders yet.</p>}
-        {data.folders.map((f) => (
-          <div key={f.name}>
-            <div className="flex items-baseline justify-between text-xs">
-              <span className="flex items-center gap-1.5 font-medium">
-                {f.name}
-                {f.running > 0 && <Loader2 size={11} className="animate-spin text-[var(--locator)]" />}
-                {f.failed > 0 && <AlertCircle size={11} className="text-[var(--danger)]" />}
-              </span>
-              <span className={`tabular-nums ${muted}`}>
-                {doneOf(f)}/{f.total} done{f.failed > 0 ? ` · ${f.failed} failed` : ""}
-              </span>
-            </div>
-            <div className="mt-1.5">
+      <div className={`${card} mt-2 !p-0`}>
+        {data.folders.length === 0 && <p className={`p-4 ${muted}`}>No folders yet.</p>}
+        {data.folders.map((f, i) => (
+          <div
+            key={f.name}
+            className={`flex items-center gap-3 px-4 py-2 text-xs ${i > 0 ? "border-t border-[var(--line)]" : ""}`}
+          >
+            <span className="flex w-40 shrink-0 items-center gap-1.5 truncate font-medium" title={f.name}>
+              <span className="truncate">{f.name}</span>
+              {f.running > 0 && <Loader2 size={11} className="shrink-0 animate-spin text-[var(--locator)]" />}
+              {f.failed > 0 && <AlertCircle size={11} className="shrink-0 text-[var(--danger)]" />}
+            </span>
+            <div className="min-w-0 flex-1">
               <ProgressBar total={f.total} summarized={doneOf(f)} converted={f.converted} failed={f.failed} />
             </div>
+            <span className={`w-28 shrink-0 text-right tabular-nums ${muted}`}>
+              {doneOf(f)}/{f.total} done{f.failed > 0 ? ` · ${f.failed} failed` : ""}
+            </span>
           </div>
         ))}
       </div>

@@ -35,6 +35,7 @@ from docx.text.paragraph import Paragraph
 
 from app.editing.docx_layout import _own_runs, _paragraph_text, _run_text, _set_run_text, _write_spans
 from app.editing.engine import EditProgress
+from app.editing.guides import format_guide
 from app.editing.layout import LayoutResult, LayoutUnsupported, ParagraphLLM, chat_json
 from app.editing.textspans import diff_spans
 
@@ -53,7 +54,7 @@ MAX_BLOCKS = 600
 _PLACE = re.compile(
     r"\b(?:paragraphs?|para|headings?|sections?|chapters?|tables?|rows?|columns?|cells?|bullets?|bulleted|"
     r"list\s+items?|intro(?:duction)?|conclusion|summary|abstract|title|first|second|third|last|final|"
-    r"beginning|end\s+of|top\s+of|bottom\s+of)\b",
+    r"beginning|end\s+of|top\s+of|bottom\s+of|headers?|footers?)\b",
     re.IGNORECASE,
 )
 # a change of every word in the document: handled paragraph by paragraph, tables and headers included
@@ -154,7 +155,7 @@ def blocks_prompt(blocks: list[Block]) -> str:
 
 @dataclass
 class Op:
-    kind: str  # replace | insert_after | insert_table_after | set_cell | delete
+    kind: str  # replace | insert_after | insert_table_after | set_cell | delete | move | set_header | set_footer
     id: int
     text: str = ""
     style: str = "paragraph"  # insert_after: paragraph | heading | bullet | numbered
@@ -163,6 +164,7 @@ class Op:
     header: bool = True
     row: int = 0
     col: int = 0
+    after: int = 0  # move: the block to place this one after
 
 
 OPS_SYSTEM_PROMPT = (
@@ -176,6 +178,8 @@ OPS_SYSTEM_PROMPT = (
     '  {"op": "insert_table_after", "id": N, "rows": [["a","b"],["c","d"]], "header": true}\n'
     '  {"op": "set_cell", "id": N, "row": 0, "col": 1, "text": "..."}   one cell of table N (counting from 0)\n'
     '  {"op": "delete", "id": N}   remove paragraph or table N\n'
+    '  {"op": "move", "id": N, "after": M}   move paragraph or table N so it comes right after block M\n'
+    '  {"op": "set_header", "text": "..."}   the text of the first section\'s header (use set_footer for the footer)\n'
     "Rules:\n"
     "- Do exactly what the request says and nothing else: name only the blocks it concerns. "
     "\"Paragraph 3\" means block [3]; \"the intro\" means the block that is the introduction.\n"
@@ -197,14 +201,28 @@ def parse_ops(data: dict, valid_ids: set[int]) -> tuple[list[Op], list[str]]:
             continue
         kind = str(raw.get("op", "")).strip().lower()
         ident = raw.get("id")
-        if kind not in ("replace", "insert_after", "insert_table_after", "set_cell", "delete"):
+        text = raw.get("text")
+        text = text if isinstance(text, str) else ""
+        if kind in ("set_header", "set_footer"):
+            # the first section's header or footer: not a numbered block
+            if not text.strip():
+                dropped.append(f"{kind[4:]}: no text given")
+                continue
+            ops.append(Op(kind, 0, text))
+            continue
+        if kind not in ("replace", "insert_after", "insert_table_after", "set_cell", "delete", "move"):
             dropped.append(f"unknown operation “{raw.get('op')}”")
             continue
         if isinstance(ident, bool) or not isinstance(ident, int) or ident not in valid_ids:
             dropped.append(f"there is no block {ident}")
             continue
-        text = raw.get("text")
-        text = text if isinstance(text, str) else ""
+        if kind == "move":
+            after = raw.get("after")
+            if isinstance(after, bool) or not isinstance(after, int) or after not in valid_ids or after == ident:
+                dropped.append(f"block {ident}: it can only move after another block")
+                continue
+            ops.append(Op(kind, ident, after=after))
+            continue
         if kind in ("replace", "insert_after") and not text.strip():
             dropped.append(f"block {ident}: no text given")
             continue
@@ -331,6 +349,26 @@ def _can_delete(element) -> str | None:
     return None
 
 
+def _set_header_or_footer(doc, op: Op) -> Change | None:
+    """Replace the text of the first section's header or footer, keeping the look of its first run.
+    None when the document has no such part to write to."""
+    section = doc.sections[0]
+    part = section.header if op.kind == "set_header" else section.footer
+    paragraphs = part.paragraphs or [part.add_paragraph()]
+    before = "\n".join(p.text for p in paragraphs).strip()
+    first = paragraphs[0]
+    for extra in paragraphs[1:]:
+        _remove(extra._p)
+    runs = first.runs
+    if not runs:
+        first.add_run(op.text)
+    else:
+        runs[0].text = op.text
+        for run in runs[1:]:
+            _remove(run._r)
+    return Change("replaced", 0, before, op.text, f"{op.kind[4:]} of the first section")
+
+
 def apply_ops(doc, blocks: list[Block], ops: list[Op]) -> tuple[list[Change], list[str]]:
     by_id = {b.id: b for b in blocks}
     changes: list[Change] = []
@@ -346,6 +384,13 @@ def apply_ops(doc, blocks: list[Block], ops: list[Op]) -> tuple[list[Change], li
         return last_inserted.get(ident, by_id[ident].element)
 
     for op_index, op in enumerate(ops):
+        if op.kind in ("set_header", "set_footer"):
+            change = _set_header_or_footer(doc, op)
+            if change is None:
+                skipped.append(f"the first section has no {op.kind[4:]} to change")
+            else:
+                add(change)
+            continue
         block = by_id[op.id]
         if op.id in gone:
             skipped.append(f"block {op.id} was already removed")
@@ -368,6 +413,16 @@ def apply_ops(doc, blocks: list[Block], ops: list[Op]) -> tuple[list[Change], li
             _remove(block.element)
             gone.add(op.id)
             add(Change("deleted", op.id, block.text if block.kind != "table" else "(table)", "", f"{block.kind} {op.id}"))
+        elif op.kind == "move":
+            why = _can_delete(block.element)
+            if why:
+                skipped.append(f"block {op.id} wasn't moved because {why}")
+                continue
+            if op.after in gone:
+                skipped.append(f"block {op.after} was already removed, so block {op.id} stayed where it was")
+                continue
+            anchor_for(op.after).addnext(block.element)  # lxml moves the element itself
+            add(Change("moved", op.id, "", block.text if block.kind != "table" else "(table)", f"{block.kind} {op.id} moved after block {op.after}"))
         elif op.kind == "insert_after":
             template = _find_template(doc, blocks, op.id, op.style, op.level)
             if template is None:
@@ -441,12 +496,14 @@ def apply_ops(doc, blocks: list[Block], ops: list[Op]) -> tuple[list[Change], li
 
 
 def summarize(changes: list[Change]) -> str:
-    counts = {"replaced": 0, "inserted": 0, "deleted": 0, "cell": 0}
+    counts = {"replaced": 0, "inserted": 0, "deleted": 0, "cell": 0, "moved": 0}
     for c in changes:
         counts[c.op] += 1
     parts = []
     if counts["replaced"]:
         parts.append(f"changed {counts['replaced']} paragraph{'s' if counts['replaced'] != 1 else ''}")
+    if counts["moved"]:
+        parts.append(f"moved {counts['moved']} part{'s' if counts['moved'] != 1 else ''}")
     if counts["cell"]:
         parts.append(f"changed {counts['cell']} table cell{'s' if counts['cell'] != 1 else ''}")
     if counts["inserted"]:
@@ -454,6 +511,19 @@ def summarize(changes: list[Change]) -> str:
     if counts["deleted"]:
         parts.append(f"removed {counts['deleted']} part{'s' if counts['deleted'] != 1 else ''}")
     return ", ".join(parts)
+
+
+def _header_footer_listing(doc) -> str:
+    """The current header and footer text, for the model (set_header / set_footer change them)."""
+    section = doc.sections[0]
+    lines = []
+    for name, part in (("header", section.header), ("footer", section.footer)):
+        if part.is_linked_to_previous:  # no part of its own: nothing to show (and reading would add one)
+            continue
+        text = " / ".join(p.text.strip() for p in part.paragraphs if p.text.strip())
+        if text:
+            lines.append(f"\n{name}: {text[:MAX_BLOCK_CHARS]}")
+    return "".join(lines)
 
 
 def edit_docx_exact(src: Path, dst: Path, instruction: str, llm: ParagraphLLM) -> Iterator[EditProgress | LayoutResult]:
@@ -466,9 +536,11 @@ def edit_docx_exact(src: Path, dst: Path, instruction: str, llm: ParagraphLLM) -
     listing = blocks_prompt(blocks)
     if len(listing) > MAX_PROMPT_CHARS:
         raise LayoutUnsupported("it is too long to edit this way")
+    listing += _header_footer_listing(doc)
 
     yield EditProgress("Working out exactly what to change")
-    data = chat_json(llm, OPS_SYSTEM_PROMPT, f"Request:\n{instruction}\n\nDocument:\n{listing}", temperature=0.1)
+    system = OPS_SYSTEM_PROMPT + format_guide("docx")
+    data = chat_json(llm, system, f"Request:\n{instruction}\n\nDocument:\n{listing}", temperature=0.1)
     ops, dropped = parse_ops(data, {b.id for b in blocks})
     if not ops:
         problem = data.get("problem") if isinstance(data.get("problem"), str) else ""

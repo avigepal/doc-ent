@@ -115,6 +115,9 @@ def _paragraphs(doc) -> list[Paragraph]:
     return [Paragraph(p, doc) for p in doc.element.body.iter(_P)]
 
 
+_PLACEHOLDER = re.compile(r"\[[^\[\]]{1,40}\]")
+
+
 def describe_document(doc) -> str:
     """What the model needs to know to plan: which kinds of text there are and
     how they look now."""
@@ -143,6 +146,19 @@ def describe_document(doc) -> str:
             run = Run(runs[0], first)
             look = f", now {_effective_font(doc, first, run)} {_effective_size(doc, first, run):g} pt"
         lines.append(f'{role}: {len(paragraphs)} paragraph(s), e.g. "{first.text.strip()[:40]}"{look}')
+    # short text anywhere in the document (table cells included), so a "matching" target can copy it exactly
+    placeholders, short = [], []
+    for paragraph in _paragraphs(doc):
+        text = paragraph.text.strip()
+        # placeholders in brackets ("[Company logo]") come first: they are what a request usually means
+        for found in _PLACEHOLDER.findall(text):
+            if found not in placeholders:
+                placeholders.append(found)
+        if text and len(text) <= 50 and not _PLACEHOLDER.search(text) and text not in short:
+            short.append(text)
+    short = placeholders + short
+    if short:
+        lines.append("short text, copy a match from here exactly: " + ", ".join(f'"{t}"' for t in short[:25]))
     return "\n".join(lines)
 
 
@@ -256,6 +272,7 @@ def apply_ops(doc, ops: list[StyleOp]) -> tuple[int, list[str]]:
     the document has nothing for."""
     touched = 0
     matched: set[int] = set()
+    missing: list[str] = []  # "matching" texts the document doesn't contain
     paragraphs = [(p, *_role(p)) for p in _paragraphs(doc) if p.text.strip()]
 
     for index, op in enumerate(ops):
@@ -271,6 +288,22 @@ def apply_ops(doc, ops: list[StyleOp]) -> tuple[int, list[str]]:
                     _fill_header_row(table, op.props["table_header_fill"])
                 touched += 1
                 matched.add(index)
+        if op.target == "matching":
+            # only the runs that contain the text: a logo's run in a table cell, not the whole cell
+            needle = op.match.lower()
+            found = 0
+            for paragraph, _, _ in paragraphs:
+                for element in _own_runs(paragraph._p):
+                    run = Run(element, paragraph)
+                    if needle in run.text.lower():
+                        _style_run(doc, paragraph, run, op.props)
+                        found += 1
+            if found:
+                touched += found
+                matched.add(index)
+            else:
+                missing.append(f'"{op.match}"')
+            continue
         if op.target == "header_footer":
             targets = [(Paragraph(p, doc), "header_footer", None) for p in _header_footer_paragraphs(doc)]
             targets = [(p, r, l) for p, r, l in targets if p.text.strip()]
@@ -286,7 +319,7 @@ def apply_ops(doc, ops: list[StyleOp]) -> tuple[int, list[str]]:
     label = {"title": "a title", "headings": "headings", "body": "body text", "lists": "lists", "tables": "tables",
              "header_footer": "a header or footer", "all": "any text"}
     skipped = [label[op.target] for i, op in enumerate(ops) if i not in matched and op.target in label]
-    return touched, skipped
+    return touched, skipped + missing
 
 
 def restyle_docx(src: Path, dst: Path, instruction: str, llm: ParagraphLLM) -> Iterator[EditProgress | StyleResult]:

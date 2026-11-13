@@ -11,7 +11,7 @@ x-backend-build: &backend-build
   # One explicit image tag shared by every service below — api and all
   # celery-* workers are the exact same image, differing only in
   # `command:`. Without this, `docker compose build` tags each service
-  # separately (doc-api, doc-celery-beat, doc-celery-summarize, ...) —
+  # separately (doc-api, doc-celery-summarize, ...) —
   # 10 near-identical-looking rows in `docker images`/Docker Desktop
   # even though they share layers and cost almost no extra disk. This
   # collapses that to one real build, one tag, ten containers from it.
@@ -126,17 +126,6 @@ services:
   celery-report:
     <<: *backend-build
     command: celery -A app.celery_app worker -Q report -c 2
-
-  # ---------- auto-ingest (polls raw/ on a timer, no manual API calls needed) ----------
-  celery-auto-ingest:
-    <<: *backend-build
-    command: celery -A app.celery_app worker -Q auto_ingest -c 1
-
-  celery-beat:
-    <<: *backend-build
-    command: celery -A app.celery_app beat --loglevel=info
-    # beat only schedules ticks (see AUTO_INGEST_INTERVAL_SECONDS in .env);
-    # celery-auto-ingest above is what actually runs the cycle.
 
   # ---------- llama.cpp inference (phase 3/4 — wire up once GGUF models exist) ----------
   # llama-text:

@@ -1,4 +1,4 @@
-import { AlertCircle, ChevronRight, Folder, FolderOpen, Loader2, Library } from "lucide-react";
+import { AlertCircle, ChevronRight, Folder, FolderOpen, Loader2, Library, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api, type DocumentsTreeLevel } from "../api/client";
 import { muted } from "../ui";
@@ -10,12 +10,18 @@ export function FolderTree({
   selected,
   onSelect,
   refreshKey,
+  onIngest,
+  ingesting,
 }: {
   /** The chosen folder path ("" = all documents). */
   selected: string;
   onSelect: (path: string) => void;
   /** Changes whenever the files may have changed (an upload, a delete): the open levels reload. */
   refreshKey: number;
+  /** Ingests just this folder ("" = all of raw/). Omit to hide the per-folder buttons. */
+  onIngest?: (path: string) => void;
+  /** The folder being ingested right now, so its button can show progress. */
+  ingesting?: string | null;
 }) {
   const [levels, setLevels] = useState<Record<string, DocumentsTreeLevel>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -109,7 +115,7 @@ export function FolderTree({
               type="button"
               onClick={() => onSelect(f.path)}
               title={f.path}
-              className={`${row} min-w-0 cursor-pointer ${tone(isSelected)}`}
+              className={`${row} min-w-0 flex-1 cursor-pointer ${tone(isSelected)}`}
             >
               {open ? <FolderOpen size={14} className="shrink-0" /> : <Folder size={14} className="shrink-0" />}
               <span className="min-w-0 flex-1 truncate">{f.name}</span>
@@ -120,6 +126,18 @@ export function FolderTree({
                 {f.total.toLocaleString()}
               </span>
             </button>
+            {onIngest && (
+              <button
+                type="button"
+                onClick={() => onIngest(f.path)}
+                disabled={ingesting !== undefined && ingesting !== null}
+                aria-label={`Ingest ${f.name}`}
+                title={`Ingest only “${f.name}” and its subfolders`}
+                className="ml-0.5 flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--ink-soft)] hover:bg-[var(--index-soft)]/50 hover:text-[var(--ink)] disabled:cursor-default disabled:opacity-50"
+              >
+                {ingesting === f.path ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+              </button>
+            )}
           </div>
           {open && f.has_subfolders && <div role="group">{renderLevel(f.path, depth + 1)}</div>}
         </div>

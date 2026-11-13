@@ -18,7 +18,14 @@ import pandas as pd
 from app.config import settings
 from app.search.answer_spec import AnswerSpec
 from app.search.ask import GROUNDED_SYSTEM_PROMPT, NOT_FOUND_MESSAGE, answer_grounded, build_context
-from app.search.correlate import CrossDocResult, StatisticalResult, correlate, wants_cross_document
+from app.search.correlate import (
+    CorrelationReport,
+    CrossDocResult,
+    StatisticalResult,
+    compare_documents,
+    correlate,
+    wants_cross_document,
+)
 from app.search.retrieval import RetrievedChunk
 from app.search.sectioned import plan_sections, section_events, should_write_in_sections
 
@@ -92,6 +99,7 @@ def stream_query(
     chat_only: bool = False,
     similarity_threshold: float = 0.3,
     spec: AnswerSpec | None = None,
+    compare: bool = False,
 ) -> Iterator[StreamEvent]:
     """Streaming counterpart to run_query/run_chat — yields events instead
     of returning one QueryResult, so a caller (see app/main.py's
@@ -103,7 +111,8 @@ def stream_query(
     event after the main answer finishes. Cross-document findings are NOT
     produced here: on an ordinary question they only restate the answer, so
     the dashboard asks for them on demand (see compare_documents and
-    POST /query/compare). "cross_doc" is therefore always None here.
+    POST /query/compare). "cross_doc" is therefore None here unless `compare`
+    is set: the Correlate toggle compares the passages behind this answer.
 
     Event order is always: one "meta" (sources + grounded, known before
     any generation starts), then zero or more "token" (answer text
@@ -143,7 +152,11 @@ def stream_query(
         system = GROUNDED_SYSTEM_PROMPT + (spec.instructions() if spec else "")
         yield from _stream_answer(llm, system, prompt)
 
-    report = correlate(question, chunks, tables, llm, cross_doc_enabled=False)
+    if compare:
+        # the Correlate toggle: compare the passages that matched this answer, across their documents
+        report = CorrelationReport(question, compare_documents(question, chunks, llm), None)
+    else:
+        report = correlate(question, chunks, tables, llm, cross_doc_enabled=False)
     yield {
         "event": "extra",
         "data": {

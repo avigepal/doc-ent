@@ -37,6 +37,7 @@ ROUTE_LABELS = {
     "chat": "Thinking…",
     "need_file": "",
     "keyword": "Finding matches…",
+    "emails": "Looking through your emails…",
     "report": "Reading all your documents…",
     "report_refine": "Updating the report…",
     "spreadsheet": "Building your spreadsheet…",

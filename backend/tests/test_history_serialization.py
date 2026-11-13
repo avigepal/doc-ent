@@ -19,6 +19,7 @@ def _query_record(**overrides):
         grounded=True,
         cross_doc=None,
         statistical=None,
+        graph=None,
         filter_folders=["contracts"],
         filter_author=None,
         filter_title=None,

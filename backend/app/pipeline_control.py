@@ -29,7 +29,6 @@ PIPELINE_QUEUES = (
     "summarize",
     "reduce",
     "correlate",
-    "auto_ingest",
 )
 
 

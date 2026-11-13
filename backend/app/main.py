@@ -54,7 +54,7 @@ class QuestionRequest(BaseModel):
     # attached file(s); editing is never guessed from the wording.
     # "spreadsheet": the Spreadsheet toggle -- every document in scope is read for the rows the message
     # asks for and the result is a new .xlsx (see app/search/spreadsheet.py).
-    mode: Literal["report", "edit", "spreadsheet"] | None = None
+    mode: Literal["report", "edit", "spreadsheet", "correlate"] | None = None
     # the user pressed "Read them all" on the plan shown for a report over a big folder
     confirm_report: bool = False
 
@@ -149,22 +149,38 @@ def _refuse_while_stopped() -> None:
         raise HTTPException(status_code=409, detail="Processing is stopped. Press Resume on the Progress page first.")
 
 
+def _scoped_folder(folder: str) -> str:
+    """The folder an ingest step or progress view is limited to ("" = all of raw/).
+    Refuses names that leave raw/ and folders that don't exist."""
+    from app.ingestion.scope import BadFolder, clean_folder, folder_dir
+
+    raw_dir = Path(settings.data_dir) / "raw"
+    try:
+        cleaned = clean_folder(folder)
+        target = folder_dir(raw_dir, cleaned)
+    except BadFolder as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if cleaned and not target.is_dir():
+        raise HTTPException(status_code=404, detail=f'no folder "{cleaned}"')
+    return cleaned
+
+
 @app.post("/ingest/scan", dependencies=[Depends(require_bearer_token), Depends(_refuse_while_stopped)])
-def ingest_scan(session: Session = Depends(get_session)) -> dict:
-    """Phase 1: walk DATA_DIR/raw, hash + classify every file, upsert into
-    Postgres, and return a pre-run summary. Does not touch the GPU — safe
-    to run repeatedly (upsert on path). Same logic the auto-ingest beat
-    task runs on a timer — see app/pipeline_runner.py."""
-    return run_scan(session)
+def ingest_scan(folder: str = "", session: Session = Depends(get_session)) -> dict:
+    """Phase 1: walk DATA_DIR/raw (or just ?folder=, with its subfolders), hash +
+    classify every file, upsert into Postgres, and return a pre-run summary.
+    Does not touch the GPU — safe to run repeatedly (upsert on path). Same logic
+    the auto-ingest beat task runs on a timer — see app/pipeline_runner.py."""
+    return run_scan(session, _scoped_folder(folder))
 
 
 @app.post("/ingest/convert", dependencies=[Depends(require_bearer_token), Depends(_refuse_while_stopped)])
-def ingest_convert(session: Session = Depends(get_session)) -> dict:
+def ingest_convert(folder: str = "", session: Session = Depends(get_session)) -> dict:
     """Phase 2: enqueue the implemented conversion tasks (convert_fast,
     convert_email_archive, convert_vision) for every discovered file routed
-    to them. convert_ocr isn't wired up yet, so files on that queue are
-    marked 'unsupported' by the scan."""
-    return {"enqueued": run_convert_enqueue(session)}
+    to them, or only those under ?folder=. convert_ocr isn't wired up yet, so
+    files on that queue are marked 'unsupported' by the scan."""
+    return {"enqueued": run_convert_enqueue(session, folder=_scoped_folder(folder))}
 
 
 @app.post("/ingest/summarize", dependencies=[Depends(require_bearer_token), Depends(_refuse_while_stopped)])
@@ -425,6 +441,7 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
     from app.routing.router import ROUTE_LABELS, RouteDecision, decide_route
     from app.search.answer_spec import parse_answer_spec
     from app.search.catalog import catalog_events
+    from app.search.email_graph import email_events, parse_mail_question, parse_relation_question, relation_events
     from app.search.keyword import keyword_events, parse_keyword_query
     from app.search.pgvector_retrieval import retrieve_top_k
     from app.search.query import stream_query
@@ -433,7 +450,7 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
     def event_source():
         answer_parts: list[str] = []
         meta = {"sources": [], "grounded": False}
-        extra = {"cross_doc": None, "statistical": None}
+        extra = {"cross_doc": None, "statistical": None, "graph": None}
         export_ids: list[int] = []
         route_action = ""
         recorded_id: int | None = None  # set when a worker already saved the report to History
@@ -451,7 +468,9 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
             forced_report = payload.mode == "report"
             forced_edit = payload.mode == "edit"
             forced_sheet = payload.mode == "spreadsheet"
-            forced = forced_report or forced_edit or forced_sheet
+            # the "Correlate" toggle: a normal grounded answer, plus findings compared across the documents it drew on
+            forced_correlate = payload.mode == "correlate"
+            forced = forced_report or forced_edit or forced_sheet or forced_correlate
             # a change to the report this chat just made ("make it shorter") reuses its notes
             followup = None if forced else _report_followup(session, payload)
             catalog = None if (forced or followup) else _catalog_answer(session, payload, _raw_dir)
@@ -537,7 +556,7 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
                 # The model decides what the message needs (search / edit a file / chat) --
                 # but only when the rules can't; see app/routing/router.py.
                 # A word or two ("mac") is a lookup, not a question: list where it appears.
-                keyword_query = parse_keyword_query(question)
+                keyword_query = None if forced_correlate else parse_keyword_query(question)
                 keyword_stream = (
                     keyword_events(
                         session, keyword_query, _raw_dir, payload.folders, payload.author, payload.title, payload.file_ids
@@ -545,8 +564,25 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
                     if keyword_query
                     else None
                 )
-                if keyword_stream is not None:
+                # "who mailed whom": answered from the stored email rows when the scope has emails
+                mail_stream = None
+                if keyword_stream is None and not forced_correlate:
+                    mail_question = parse_mail_question(question)
+                    if mail_question is not None:
+                        mail_stream = email_events(
+                            session, mail_question, _raw_dir, payload.folders, payload.file_ids
+                        )
+                    elif (relation_question := parse_relation_question(question)) is not None:
+                        # "relation between alice, bob and carol": the same rows, drawn as a chart
+                        mail_stream = relation_events(
+                            session, relation_question, _raw_dir, payload.folders, payload.file_ids
+                        )
+                if forced_correlate:
+                    decision = RouteDecision("search", question, "user")
+                elif keyword_stream is not None:
                     decision = RouteDecision("keyword", question, "rules")
+                elif mail_stream is not None:
+                    decision = RouteDecision("emails", question, "rules")
                 else:
                     decision = decide_route(
                         question,
@@ -570,6 +606,8 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
 
                 if decision.action == "keyword":
                     events = keyword_stream
+                elif decision.action == "emails":
+                    events = mail_stream
                 elif decision.action == "report":
                     events = _report_stream(session, payload)
                 elif decision.action == "chat":
@@ -592,7 +630,9 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
                         query_text=decision.query,
                         file_ids=payload.file_ids,
                     )
-                    events = stream_query(decision.query, chunks, {}, _text_llm, spec=spec)
+                    events = stream_query(
+                        decision.query, chunks, {}, _text_llm, spec=spec, compare=forced_correlate
+                    )
 
             for evt in events:
                 if evt["event"] == "meta":
@@ -716,6 +756,43 @@ def query_suggest_endpoint(payload: SuggestRequest, session: Session = Depends(g
 
 MAX_UPLOAD_FILES = 50
 MAX_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024  # 100MB
+
+
+@app.post("/emails/backfill", dependencies=[Depends(require_bearer_token)])
+def emails_backfill_endpoint(all_files: bool = False, session: Session = Depends(get_session)) -> dict:
+    """Records who wrote to whom for email files that were converted before that was kept, by reading the
+    raw files again (no model). Only files without rows yet, unless all_files=true. See ingestion/email_store.py."""
+    from app.ingestion.email_store import backfill_email_links
+
+    return backfill_email_links(session, only_missing=not all_files)
+
+
+@app.get("/emails/messages", dependencies=[Depends(require_bearer_token)])
+def emails_messages_endpoint(
+    sender: str = "",
+    recipient: str = "",
+    after: str = "",
+    before: str = "",
+    folder: str = "",
+    offset: int = 0,
+    limit: int = 50,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Emails filtered by sender, recipient (To or Cc), sent date (YYYY-MM-DD, both ends
+    inclusive) and folder. One entry per message, newest first. See app/search/email_filter.py."""
+    from app.search.email_filter import EmailFilter, list_emails, parse_day
+
+    try:
+        flt = EmailFilter(
+            sender=sender.strip(),
+            recipient=recipient.strip(),
+            after=parse_day(after),
+            before=parse_day(before),
+            folder=_scoped_folder(folder),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return list_emails(session, flt, Path(settings.data_dir) / "raw", offset=max(0, offset), limit=max(1, limit))
 
 
 @app.post("/ingest/upload", dependencies=[Depends(require_bearer_token)])
@@ -1165,12 +1242,40 @@ def file_sections_endpoint(
     return result
 
 
+@app.get("/files/original", dependencies=[Depends(require_bearer_token)])
+def file_original_endpoint(
+    file_id: int | None = None,
+    path: str | None = None,
+    session: Session = Depends(get_session),
+) -> FileResponse:
+    """The file as it was ingested, for the viewer's Original tab. PDFs and
+    images open in the browser; any other type is a download. See app/search/original.py."""
+    from urllib.parse import quote
+
+    from app.search.original import INLINE_TYPES, find_record, original_path
+
+    record = find_record(session, file_id, path)
+    target = original_path(record.path, Path(settings.data_dir) / "raw") if record else None
+    if target is None:
+        raise HTTPException(status_code=404, detail="no original file for this document")
+    inline = record.mime_type in INLINE_TYPES
+    return FileResponse(
+        target,
+        media_type=record.mime_type if inline else "application/octet-stream",
+        headers={
+            "Content-Disposition": f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{quote(target.name)}",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @app.get("/ingestion/progress", dependencies=[Depends(require_bearer_token)])
-def ingestion_progress_endpoint(pipeline_limit: int = 100, session: Session = Depends(get_session)) -> dict:
+def ingestion_progress_endpoint(pipeline_limit: int = 100, folder: str = "", session: Session = Depends(get_session)) -> dict:
     """What the pipeline is doing right now: overall + per-folder counts,
     jobs currently running (with elapsed time), failures with their
-    error, and the most recent completions. Backs the Progress page,
-    which polls it. See app/ingestion/progress.py."""
+    error, and the most recent completions. ?folder= limits every number and
+    list to that folder and its subfolders. Backs the Progress page, which
+    polls it. See app/ingestion/progress.py."""
     from app.ingestion.progress_query import get_ingestion_progress
 
     from app.ingestion.progress import PIPELINE_LIMIT, PIPELINE_LIMIT_MAX
@@ -1178,6 +1283,7 @@ def ingestion_progress_endpoint(pipeline_limit: int = 100, session: Session = De
     return get_ingestion_progress(
         session,
         str(Path(settings.data_dir) / "raw"),
+        folder=_scoped_folder(folder),
         pipeline_limit=max(PIPELINE_LIMIT, min(pipeline_limit, PIPELINE_LIMIT_MAX)),
     )
 

@@ -35,6 +35,7 @@ from openpyxl.formula.translate import Translator
 from openpyxl.utils import column_index_from_string, get_column_letter
 
 from app.editing.engine import EditProgress
+from app.editing.guides import format_guide
 from app.editing.layout import LayoutUnsupported, ParagraphLLM, batches, chat_json, reword_batch
 
 MAX_OPERATIONS = 60
@@ -738,7 +739,8 @@ def edit_xlsx(src: Path, dst: Path, instruction: str, llm: ParagraphLLM) -> Iter
         listing = listing[:MAX_PROMPT_CHARS] + "\n(cut)"
 
     yield EditProgress("Working out exactly what to change")
-    data = chat_json(llm, OPS_SYSTEM_PROMPT, f"Request:\n{instruction}\n\nWorkbook:\n{listing}", temperature=0.1)
+    system = OPS_SYSTEM_PROMPT + format_guide("xlsx")
+    data = chat_json(llm, system, f"Request:\n{instruction}\n\nWorkbook:\n{listing}", temperature=0.1)
     ops, dropped = parse_ops(data, wb)
     if not ops:
         problem = data.get("problem") if isinstance(data.get("problem"), str) else ""

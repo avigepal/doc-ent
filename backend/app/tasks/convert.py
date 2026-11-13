@@ -3,9 +3,9 @@
 convert_fast (Docling) and convert_email_archive (mailbox/extract-msg/
 readpst) are implemented, both via the shared convert_and_store pipeline.
 convert_vision (standalone images, via the llama-server vision model) is
-implemented too -- see app/conversion/vision_backend.py. convert_ocr still
-needs its routing probe wired up (Tesseract text-density check) before it
-can run; Docling already OCRs scanned PDFs inside convert_fast.
+implemented too -- see app/conversion/vision_backend.py. convert_ocr reads
+the pages of a PDF that no reader could get text from, with the vision model
+(app/conversion/ocr_backend.py); convert_fast hands such files over.
 """
 
 import logging
@@ -21,9 +21,11 @@ from app.config import settings
 from app.conversion.backends import ConversionBackend
 from app.conversion.backends import resolve_conversion_backend as _convert_fast_backend
 from app.conversion.email_backend import EmailArchiveBackend
+from app.conversion.ocr_backend import pdf_ocr_backend
 from app.conversion.pipeline import EmptyConversionError, convert_and_store
 from app.conversion.vision_backend import vision_backend
 from app.db import SessionLocal
+from app.ingestion.email_store import store_email_links
 from app.models import FileRecord, JobRecord
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,20 @@ def _queue_indexing(file_id: int, queue: str | None = None) -> None:
         enqueue_once(index_file, file_id, queue=UPLOAD_QUEUE if queue == UPLOAD_QUEUE else None)
     except Exception:
         logger.warning("could not queue indexing for file %s; auto-ingest will", file_id, exc_info=True)
+
+
+def _hand_to_ocr(session, file_record: FileRecord, job: JobRecord) -> None:
+    """Docling got no text from this PDF even after its own retries (pypdfium2,
+    full-page OCR), so the pages are images. The file waits in status "ocr"
+    (run_convert_enqueue re-queues it if this enqueue is lost) and convert_ocr
+    reads the pages with the vision model."""
+    from app.queue_guard import enqueue_once
+
+    job.state = "done"
+    job.error = "no text from the PDF reader; pages sent to OCR"
+    file_record.status = "ocr"
+    session.commit()
+    enqueue_once(convert_ocr, file_record.id)
 
 
 def _apply_document_metadata(file_record: FileRecord, engine_metadata: dict) -> None:
@@ -125,12 +141,18 @@ def _run_conversion_job(
             extra_metadata={"sha256": file_record.sha256, "mime_type": file_record.mime_type},
         )
         _apply_document_metadata(file_record, stored.engine_metadata)
+        # an email file also records who wrote to whom, one row per message and recipient
+        store_email_links(session, file_id, stored.engine_metadata.get("messages"))
 
         file_record.status = "converted"
         job.state = "done"
         session.commit()
         _queue_indexing(file_id, _task_queue(task))
     except EmptyConversionError as exc:
+        if job_type == "convert_fast" and file_record is not None and file_record.path.lower().endswith(".pdf"):
+            # The PDF reader got no text from it: its pages are images. OCR them.
+            _hand_to_ocr(session, file_record, job)
+            return
         # Deterministic: park the file as failed right away instead of
         # re-running a multi-minute conversion three more times.
         job.state = "failed"
@@ -176,9 +198,9 @@ def convert_email_archive(self, file_id: int) -> None:
     _run_conversion_job(self, file_id, "convert_email_archive", _email_archive)
 
 
-@celery_app.task(name="app.tasks.convert.convert_ocr")
-def convert_ocr(file_id: int) -> None:
-    raise NotImplementedError("phase 2: wire up Tesseract probe + Docling OCR/Marker fallback")
+@celery_app.task(name="app.tasks.convert.convert_ocr", bind=True, max_retries=3, default_retry_delay=30)
+def convert_ocr(self, file_id: int) -> None:
+    _run_conversion_job(self, file_id, "convert_ocr", pdf_ocr_backend)
 
 
 @celery_app.task(name="app.tasks.convert.convert_vision", bind=True, max_retries=3, default_retry_delay=30)

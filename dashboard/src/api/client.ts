@@ -34,6 +34,17 @@ export function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
+/** One email message, as the Emails view lists it (a message is listed once, with all its recipients). */
+export interface EmailMessage {
+  file_id: number;
+  file: string;
+  folder: string;
+  subject: string;
+  sent_at: string | null;
+  sender: { name: string; addr: string };
+  recipients: string[];
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -111,17 +122,21 @@ export const api = {
   cancelReportJob: (jobId: string) =>
     request<{ stopping: boolean }>(`/report-jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" }),
 
-  ingestScan: () =>
+  // folder "" = all of raw/; otherwise that folder and its subfolders only
+  ingestScan: (folder = "") =>
     request<{
       raw_dir: string;
+      folder: string;
       total_files: number;
       total_bytes: number;
       by_queue: Record<string, number>;
       by_mime: Record<string, number>;
-    }>("/ingest/scan", { method: "POST" }),
+    }>(`/ingest/scan?folder=${encodeURIComponent(folder)}`, { method: "POST" }),
 
-  ingestConvert: () =>
-    request<{ enqueued: Record<string, number> }>("/ingest/convert", { method: "POST" }),
+  ingestConvert: (folder = "") =>
+    request<{ enqueued: Record<string, number> }>(`/ingest/convert?folder=${encodeURIComponent(folder)}`, {
+      method: "POST",
+    }),
 
   ingestSummarize: () =>
     request<{ enqueued: { summarize: number } }>("/ingest/summarize", { method: "POST" }),
@@ -207,7 +222,7 @@ export const api = {
       // "report": read every document in scope and write a full report, whatever the message says
       // "report_confirmed": a report over a big folder after the user saw the plan and pressed "Read them all"
       // "spreadsheet": read every document in scope for the rows the message asks for and build an .xlsx
-      mode?: "report" | "edit" | "spreadsheet" | "report_confirmed";
+      mode?: "report" | "edit" | "spreadsheet" | "correlate" | "report_confirmed";
     } = {},
     handlers: {
       onMeta?: (meta: { sources: string[]; grounded: boolean }) => void;
@@ -215,6 +230,7 @@ export const api = {
       onExtra?: (extra: {
         cross_doc: { answer: string; sources: string[] } | null;
         statistical: { answer: string; correlation_summary: string } | null;
+        graph?: RelationGraph | null;
       }) => void;
       onDone?: (historyId: number) => void;
       // what the app decided to do with the message, and progress while it works
@@ -379,8 +395,11 @@ export const api = {
   },
 
   // Live pipeline state for the Progress page — polled while it's open.
-  ingestionProgress: (pipelineLimit = 100) =>
-    request<IngestionProgress>(`/ingestion/progress?pipeline_limit=${pipelineLimit}`),
+  // folder "" = all of raw/; otherwise only that folder and its subfolders
+  ingestionProgress: (pipelineLimit = 100, folder = "") =>
+    request<IngestionProgress>(
+      `/ingestion/progress?pipeline_limit=${pipelineLimit}&folder=${encodeURIComponent(folder)}`,
+    ),
   stopPipeline: () => request<{ paused: boolean; purged: number }>("/ingest/stop", { method: "POST" }),
   resumePipeline: () => request<{ paused: boolean }>("/ingest/resume", { method: "POST" }),
 
@@ -388,31 +407,46 @@ export const api = {
 
   // Drop zone on the Documents page: adds files to a corpus folder (created if
   // new). Multipart, so no JSON Content-Type — the browser sets the boundary.
-  uploadDocuments: async (
+  // Sends the files as one request and reports how much of it has gone out
+  // (0 to 1). XMLHttpRequest is used because fetch can't report upload progress.
+  uploadDocuments: (
     folder: string,
     files: File[],
-  ): Promise<{ folder: string; uploaded: string[]; file_ids: number[] }> => {
-    const token = getToken();
-    const form = new FormData();
-    form.append("folder", folder);
-    for (const f of files) form.append("files", f);
+    onProgress?: (fraction: number) => void,
+  ): Promise<{ folder: string; uploaded: string[]; file_ids: number[] }> =>
+    new Promise((resolve, reject) => {
+      const token = getToken();
+      const form = new FormData();
+      form.append("folder", folder);
+      for (const f of files) form.append("files", f);
 
-    const headers = new Headers();
-    if (token) headers.set("Authorization", `Bearer ${token}`);
-
-    const response = await authFetch(`${BASE_URL}/documents/upload`, { method: "POST", headers, body: form });
-    if (!response.ok) {
-      let detail = response.statusText;
-      try {
-        const body = await response.json();
-        detail = body.detail ?? detail;
-      } catch {
-        // not JSON; keep statusText
-      }
-      throw new ApiError(response.status, detail);
-    }
-    return response.json();
-  },
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${BASE_URL}/documents/upload`);
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
+      };
+      xhr.onload = () => {
+        if (xhr.status === 401) {
+          // same as authFetch: the session ended, so go to the login page
+          clearToken();
+          if (window.location.pathname !== "/login") window.location.assign("/login");
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(JSON.parse(xhr.responseText));
+          return;
+        }
+        let detail = xhr.statusText;
+        try {
+          detail = JSON.parse(xhr.responseText).detail ?? detail;
+        } catch {
+          // not JSON; keep statusText
+        }
+        reject(new ApiError(xhr.status, detail));
+      };
+      xhr.onerror = () => reject(new ApiError(0, "The upload was interrupted. Check the connection and try again."));
+      xhr.send(form);
+    }),
 
   deleteDocuments: (ids: number[]) =>
     request<{ deleted: number }>("/documents/delete", { method: "POST", body: JSON.stringify({ ids }) }),
@@ -499,6 +533,38 @@ export const api = {
 
   // A window of one document's sections for the viewer: around a section, or around
   // the one that matches `q` best. See backend/app/search/viewer.py.
+  // The document's original file (PDF, image, or any other type as a download).
+  // Fetched with the auth header, so the viewer gets a blob it can show.
+  fileOriginal: async (o: { fileId?: number; path?: string }): Promise<Blob> => {
+    const params = new URLSearchParams();
+    if (o.fileId !== undefined) params.set("file_id", String(o.fileId));
+    if (o.path) params.set("path", o.path);
+    const token = getToken();
+    const headers = new Headers();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const response = await authFetch(`${BASE_URL}/files/original?${params}`, { headers });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        const body = await response.json();
+        detail = body.detail ?? detail;
+      } catch {
+        // not JSON; keep statusText
+      }
+      throw new ApiError(response.status, detail);
+    }
+    return response.blob();
+  },
+
+  // Emails filtered by sender, recipient, sent date (YYYY-MM-DD, both ends inclusive) and folder.
+  listEmails: (o: { sender?: string; recipient?: string; after?: string; before?: string; folder?: string; offset?: number; limit?: number }) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(o)) {
+      if (value !== undefined && value !== "") params.set(key, String(value));
+    }
+    return request<{ total: number; messages: EmailMessage[] }>(`/emails/messages?${params}`);
+  },
+
   getFileSections: (o: { fileId?: number; path?: string; around?: number; span?: number; q?: string; phrase?: boolean }) => {
     const params = new URLSearchParams();
     if (o.fileId !== undefined) params.set("file_id", String(o.fileId));
@@ -589,6 +655,26 @@ export interface FileChange {
   accepted: boolean;
 }
 
+/** The people in an email relation chart: nodes are people, edges are the emails between them. */
+export interface RelationGraph {
+  mode: "between" | "around";
+  nodes: { id: string; label: string; person: boolean }[];
+  edges: {
+    source: string;
+    target: string;
+    emails: number;
+    /** emails from source to target */
+    forward: number;
+    /** emails from target to source */
+    backward: number;
+    first: string;
+    last: string;
+    subjects: string[];
+  }[];
+  /** named people with no email in the selected documents */
+  missing: string[];
+}
+
 export interface QueryResult {
   question: string;
   answer: string;
@@ -596,6 +682,7 @@ export interface QueryResult {
   grounded: boolean;
   cross_doc: { answer: string; sources: string[] } | null;
   statistical: { answer: string; correlation_summary: string } | null;
+  graph?: RelationGraph | null;
   files?: GeneratedFile[];
   history_id?: number;
   /** Related questions offered under the answer. */
@@ -720,6 +807,7 @@ export interface QueryHistoryDetail extends QueryHistorySummary {
   sources: string[];
   cross_doc: { answer: string; sources: string[] } | null;
   statistical: { answer: string; correlation_summary: string } | null;
+  graph?: RelationGraph | null;
 }
 
 export interface ExportHistoryRow {

@@ -170,3 +170,52 @@ def test_a_request_the_model_cannot_turn_into_changes_says_how_to_ask(tmp_path):
     make(src)
     with pytest.raises(ValueError, match="make the headings dark blue"):
         list(restyle_docx(src, tmp_path / "b.docx", "do something", FakeModel({"operations": []})))
+
+
+def make_logo(path):
+    d = docx.Document()
+    d.add_paragraph("Product One-Pager")
+    t = d.add_table(rows=1, cols=2)
+    logo = t.cell(0, 0).paragraphs[0]
+    logo.add_run("[Company logo]  ").bold = True
+    logo.add_run("[Company name]")
+    t.cell(0, 1).text = "Contact"
+    d.save(str(path))
+
+
+def logo_run(document):
+    return next(r for r in document.tables[0].rows[0].cells[0].paragraphs[0].runs if "logo" in r.text)
+
+
+def test_a_matching_text_gets_its_own_colour_and_the_rest_of_its_cell_does_not(tmp_path):
+    src, dst = tmp_path / "a.docx", tmp_path / "b.docx"
+    make_logo(src)
+    plan = {"operations": [{"target": "matching", "match": "logo", "set": {"color": "#1F3864"}}]}
+
+    result = run(src, dst, plan)
+
+    out = docx.Document(str(dst))
+    assert str(logo_run(out).font.color.rgb) == "1F3864"
+    name_run = out.tables[0].rows[0].cells[0].paragraphs[0].runs[1]
+    assert name_run.font.color.rgb is None
+    assert result.changed == 1
+
+
+def test_a_matching_text_that_is_not_in_the_file_says_so(tmp_path):
+    src, dst = tmp_path / "a.docx", tmp_path / "b.docx"
+    make_logo(src)
+    plan = {"operations": [{"target": "matching", "match": "footer address", "set": {"color": "#1F3864"}}]}
+
+    with pytest.raises(ValueError, match='"footer address"'):
+        run(src, dst, plan)
+
+
+def test_a_matching_change_drops_paragraph_settings(tmp_path):
+    src, dst = tmp_path / "a.docx", tmp_path / "b.docx"
+    make_logo(src)
+    plan = {"operations": [{"target": "matching", "match": "logo", "set": {"color": "#1F3864", "align": "center"}}]}
+
+    run(src, dst, plan)
+
+    cell_paragraph = docx.Document(str(dst)).tables[0].rows[0].cells[0].paragraphs[0]
+    assert cell_paragraph.alignment is None
