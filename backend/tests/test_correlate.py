@@ -1,7 +1,9 @@
 import pandas as pd
 
 from app.search.correlate import (
+    cited_sources,
     compute_correlations,
+    best_passages_per_file,
     correlate,
     cross_document_correlate,
     format_correlation_matrix,
@@ -59,9 +61,10 @@ def test_cross_document_correlate_builds_numbered_sections_and_cites_sources():
 
 def test_compute_correlations_only_uses_numeric_columns():
     df = pd.DataFrame({"revenue": [1, 2, 3, 4], "cost": [2, 4, 6, 8], "label": ["a", "b", "c", "d"]})
-    corr = compute_correlations({"sheet1": df})
-    assert set(corr.columns) == {"revenue", "cost"}
-    assert round(corr.loc["revenue", "cost"], 2) == 1.0
+    pairs = compute_correlations({"sheet1": df})
+    assert [(p.first, p.second) for p in pairs] == [("revenue", "cost")]
+    assert round(pairs[0].r, 2) == 1.0
+    assert pairs[0].rows == 4
 
 
 def test_format_correlation_matrix_reports_strong_pairs_sorted_by_strength():
@@ -70,9 +73,9 @@ def test_format_correlation_matrix_reports_strong_pairs_sorted_by_strength():
         "cost": [2, 4, 6, 8],      # perfectly correlated with revenue
         "noise": [5, 1, 9, 2],     # weakly/uncorrelated
     })
-    corr = compute_correlations({"sheet1": df})
+    pairs = compute_correlations({"sheet1": df})
 
-    summary = format_correlation_matrix(corr, min_abs=0.5)
+    summary = format_correlation_matrix(pairs, min_abs=0.5)
 
     assert "revenue vs cost" in summary
     assert "r=1.00" in summary
@@ -80,9 +83,9 @@ def test_format_correlation_matrix_reports_strong_pairs_sorted_by_strength():
 
 def test_format_correlation_matrix_handles_no_strong_pairs():
     df = pd.DataFrame({"a": [1, 2, 3, 4], "b": [4, 1, 3, 2]})
-    corr = compute_correlations({"sheet1": df})
+    pairs = compute_correlations({"sheet1": df})
 
-    summary = format_correlation_matrix(corr, min_abs=0.99)
+    summary = format_correlation_matrix(pairs, min_abs=0.99)
 
     assert "No strong correlations" in summary
 
@@ -185,20 +188,20 @@ def test_correlate_skips_cross_doc_when_disabled():
 def test_compare_documents_compares_the_matching_files():
     from app.search.correlate import compare_documents
 
-    llm = FakeLLM("they agree")
+    llm = FakeLLM("they agree [1][2]")
     chunks = [_chunk("a.pdf", "H", "text a"), _chunk("b.pdf", "H", "text b")]
 
     result = compare_documents("mac vs pc", chunks, llm)
 
     assert result is not None
-    assert result.answer == "they agree"
+    assert result.answer == "they agree [1][2]"
     assert result.sources == ["a.pdf", "b.pdf"]
 
 
 def test_compare_documents_leaves_out_weakly_matching_files():
     from app.search.correlate import compare_documents
 
-    llm = FakeLLM()
+    llm = FakeLLM("both agree [1][2]")
     chunks = [
         _chunk("a.pdf", "H", "text a", score=0.9),
         _chunk("b.pdf", "H", "text b", score=0.8),
@@ -220,3 +223,65 @@ def test_compare_documents_needs_two_matching_files():
     assert compare_documents("q", only_one_matches, llm) is None
     assert compare_documents("q", [_chunk("a.pdf", "H", "x"), _chunk("a.pdf", "H2", "y")], llm) is None
     assert llm.calls == []  # no model call when there is nothing to compare
+
+
+# ---------- numbers: correlation never crosses tables, pairs are structured ----------
+
+def test_compute_correlations_never_pairs_columns_from_different_tables():
+    a = pd.DataFrame({"x": [1, 2, 3, 4], "y": [2, 4, 6, 8]})
+    b = pd.DataFrame({"p": [1, 2, 3, 4], "q": [9, 1, 8, 2]})
+    pairs = compute_correlations({"a": a, "b": b})
+    assert {(p.table, p.first, p.second) for p in pairs} == {("a", "x", "y"), ("b", "p", "q")}
+
+
+def test_compute_correlations_skips_pairs_with_too_few_rows():
+    df = pd.DataFrame({"x": [1, 2, None, None], "y": [2, None, 6, None]})
+    assert compute_correlations({"t": df}) == []
+
+
+def test_statistical_result_carries_structured_pairs():
+    llm = FakeLLM(response="ok")
+    df = pd.DataFrame({"revenue": [1, 2, 3, 4], "cost": [2, 4, 6, 8]})
+    result = statistical_correlate("q", {"sheet1": df}, llm)
+    assert len(result.pairs) == 1
+    assert result.pairs[0].first == "revenue" and result.pairs[0].second == "cost"
+
+
+# ---------- sources: only the documents the answer cites ----------
+
+def test_cross_doc_sources_are_only_the_cited_documents():
+    llm = FakeLLM(response="Budget was approved [1] and the vendor was chosen [3, 4].")
+    chunks = [_chunk("a.pdf", "H", "t1"), _chunk("b.pdf", "H", "t2"), _chunk("c.pdf", "H", "t3"), _chunk("d.pdf", "H", "t4")]
+    result = cross_document_correlate("q", chunks, llm)
+    assert result.sources == ["a.pdf", "c.pdf", "d.pdf"]
+    assert result.retrieved == ["a.pdf", "b.pdf", "c.pdf", "d.pdf"]
+
+
+def test_cited_sources_is_empty_when_the_answer_cites_nothing():
+    assert cited_sources("No notable relationships found.", ["a.pdf", "b.pdf"]) == []
+
+
+# ---------- coverage: one passage per document ----------
+
+def test_best_passages_per_file_keeps_best_passage_from_each_document_up_to_the_limit():
+    chunks = [
+        _chunk("a.pdf", "H", "a-low"), _chunk("a.pdf", "H", "a-high"),
+        _chunk("b.pdf", "H", "b-only"), _chunk("c.pdf", "H", "c-only"),
+    ]
+    chunks[0] = RetrievedChunk("a.pdf", "H", "a-low", 0.4)
+    chunks[1] = RetrievedChunk("a.pdf", "H", "a-high", 0.9)
+    chunks[2] = RetrievedChunk("b.pdf", "H", "b-only", 0.6)
+    chunks[3] = RetrievedChunk("c.pdf", "H", "c-only", 0.2)
+    kept = best_passages_per_file(chunks, max_files=2, per_file=1)
+    assert [c.text for c in kept] == ["a-high", "b-only"]
+
+
+def test_best_passages_per_file_keeps_several_passages_from_a_document_in_order():
+    chunks = [
+        RetrievedChunk("a.pdf", "H", "a-low", 0.4),
+        RetrievedChunk("a.pdf", "H", "a-high", 0.9),
+        RetrievedChunk("b.pdf", "H", "b-only", 0.6),
+        RetrievedChunk("c.pdf", "H", "c-only", 0.2),
+    ]
+    kept = best_passages_per_file(chunks, max_files=2, per_file=2)
+    assert [c.text for c in kept] == ["a-low", "a-high", "b-only"]

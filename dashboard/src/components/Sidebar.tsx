@@ -5,6 +5,8 @@ import {
   Loader2,
   MessageSquare,
   MessageSquarePlus,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pin,
   PinOff,
   Plus,
@@ -16,6 +18,7 @@ import { createPortal } from "react-dom";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, ApiError, type ConversationSummary, type FolderStatus } from "../api/client";
 import { buttonSecondary, errorText, label, muted } from "../ui";
+import { SIDEBAR_WIDTH, useSidebar } from "../sidebarState";
 
 const FOLDER_POLL_MS = 4000;
 const CONVERSATION_POLL_MS = 5000;
@@ -189,6 +192,7 @@ export function Sidebar() {
   const [folders, setFolders] = useState<FolderStatus[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const { collapsed, toggle } = useSidebar();
 
   const activeConversationId = searchParams.get("c");
   const scopeAll = searchParams.get("all") === "1";
@@ -292,8 +296,35 @@ export function Sidebar() {
 
   return (
     <aside
-      className={`shrink-0 overflow-y-auto border-b border-[var(--line)] px-4 py-4 lg:fixed lg:bottom-0 lg:left-0 lg:z-10 lg:w-[220px] lg:border-b-0 lg:border-r ${SIDEBAR_TOP_CLASS}`}
+      className={`shrink-0 overflow-y-auto overflow-x-hidden border-b border-[var(--line)] py-4 transition-[width,padding] duration-200 ease-in-out motion-reduce:transition-none lg:fixed lg:bottom-0 lg:left-0 lg:z-10 lg:border-b-0 lg:border-r ${SIDEBAR_TOP_CLASS} ${
+        collapsed ? `px-2 ${SIDEBAR_WIDTH.closed}` : `px-4 ${SIDEBAR_WIDTH.open}`
+      }`}
     >
+      <div className={`flex items-center ${collapsed ? "flex-col gap-3" : "justify-end"}`}>
+        <button
+          type="button"
+          onClick={toggle}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={!collapsed}
+          className="cursor-pointer rounded p-1 text-[var(--ink-soft)] transition-colors hover:text-[var(--ink)]"
+        >
+          {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+        </button>
+        {collapsed && (
+          <Link to="/ask" aria-label="New chat" title="New chat" className="rounded p-1 text-[var(--ink-soft)] hover:text-[var(--ink)]">
+            <MessageSquarePlus size={16} />
+          </Link>
+        )}
+      </div>
+
+      <div
+        aria-hidden={collapsed}
+        className={`transition-[opacity,visibility] duration-200 ease-in-out motion-reduce:transition-none ${
+          collapsed ? "invisible opacity-0" : "visible opacity-100"
+        }`}
+      >
+      <>
       <div>
         <div className="flex items-center gap-1.5">
           <span className={label}>Scope</span>
@@ -443,6 +474,9 @@ export function Sidebar() {
             })}
           </div>
         )}
+      </div>
+
+      </>
       </div>
 
       {helpOpen && <HelpModal onClose={() => setHelpOpen(false)} />}

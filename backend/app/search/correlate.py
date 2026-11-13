@@ -29,17 +29,24 @@ CROSS_DOC_SYSTEM_PROMPT = (
     "Identify relationships, contradictions, or trends across them. Cite "
     "the source number(s) in brackets, e.g. [1], for every claim. Write in "
     "Markdown, lead with the finding, and keep it short. Use only "
-    "what the sources say -- no outside knowledge, no guessing. Report only "
-    "relationships that are explicitly supported; if the sources have no "
-    "real relationship to each other, reply exactly: No notable "
-    "relationships found."
+    "what the sources say -- no outside knowledge, no guessing. A "
+    "relationship can be a shared person, company or topic, a decision that "
+    "follows from another document, or a sequence in time that links them; "
+    "name the link and cite both documents. Report only relationships the "
+    "sources explicitly support; if the sources have no real link to each "
+    "other, reply exactly: No notable relationships found."
 )
 
 STATISTICAL_SYSTEM_PROMPT = (
     "You are given correlation coefficients that were already computed "
     "from the underlying data. Narrate what they mean in plain language. "
     "Use ONLY the numbers given to you — do not estimate or invent "
-    "correlation values yourself."
+    "correlation values yourself. Mention every pair listed, with its r "
+    "value as given. Describe strength from |r|: 0.9 and above is very "
+    "strong, 0.7 to 0.9 strong, 0.5 to 0.7 moderate. Never say 'perfect' or "
+    "'exact' unless r is exactly 1.000; a positive r means the two columns "
+    "rise together, a negative r means one falls as the other rises. "
+    "Correlation does not show that one causes the other."
 )
 
 
@@ -50,13 +57,24 @@ class LLMClient(Protocol):
 @dataclass(frozen=True)
 class CrossDocResult:
     answer: str
-    sources: list[str]
+    sources: list[str]  # only the documents the answer cites
+    retrieved: list[str] = ()  # every document that was compared
+
+
+@dataclass(frozen=True)
+class CorrelationPair:
+    table: str
+    first: str
+    second: str
+    r: float
+    rows: int
 
 
 @dataclass(frozen=True)
 class StatisticalResult:
     answer: str
     correlation_summary: str
+    pairs: list[CorrelationPair] = ()
 
 
 @dataclass(frozen=True)
@@ -85,31 +103,63 @@ def cross_document_correlate(question: str, chunks: list[RetrievedChunk], llm: L
     ]
     prompt = f"Question: {question}\n\n" + "\n\n".join(sections)
     answer = llm.chat(system=CROSS_DOC_SYSTEM_PROMPT, user=prompt)
-    return CrossDocResult(answer=answer, sources=sources)
+    return CrossDocResult(answer=answer, sources=cited_sources(answer, sources), retrieved=sources)
+
+
+_CITATION = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
+
+
+def cited_sources(answer: str, sources: list[str]) -> list[str]:
+    """The documents an answer actually cites ([1], [2, 3]...), in the order they were numbered."""
+    cited: set[int] = set()
+    for group in _CITATION.findall(answer):
+        cited.update(int(n) for n in re.findall(r"\d+", group))
+    return [path for i, path in enumerate(sources, start=1) if i in cited]
+
+
+def best_passages_per_file(chunks: list[RetrievedChunk], max_files: int, per_file: int = 2) -> list[RetrievedChunk]:
+    """Up to per_file of the best-scoring passages from each of up to max_files documents. Widening retrieval
+    and keeping a few passages per document lets a correlation see many documents, not only the few whose
+    passages happened to rank highest; a short email keeps enough of its text to relate to another."""
+    kept_ids: set[int] = set()
+    counts: dict[str, int] = {}
+    for chunk in sorted(chunks, key=lambda c: -c.score):
+        if chunk.file_path not in counts and len(counts) >= max_files:
+            continue
+        if counts.get(chunk.file_path, 0) < per_file:
+            counts[chunk.file_path] = counts.get(chunk.file_path, 0) + 1
+            kept_ids.add(id(chunk))
+    return [c for c in chunks if id(c) in kept_ids]
 
 
 # ---------- statistical mode ----------
 
-def compute_correlations(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    numeric_frames = [df.select_dtypes(include="number") for df in tables.values()]
-    combined = pd.concat(numeric_frames, axis=1)
-    return combined.corr()
+MIN_PAIR_ROWS = 3
 
 
-def format_correlation_matrix(corr: pd.DataFrame, min_abs: float = 0.5) -> str:
-    cols = list(corr.columns)
-    pairs: list[tuple[str, str, float]] = []
-    for i in range(len(cols)):
-        for j in range(i + 1, len(cols)):
-            r = corr.iloc[i, j]
-            if pd.notna(r) and abs(r) >= min_abs:
-                pairs.append((cols[i], cols[j], float(r)))
+def compute_correlations(tables: dict[str, pd.DataFrame]) -> list[CorrelationPair]:
+    """Pearson r for every pair of numeric columns, computed inside each table only. Rows from
+    different tables are not the same records, so correlating across tables would be meaningless."""
+    found: list[CorrelationPair] = []
+    for name, df in tables.items():
+        numeric = df.select_dtypes(include="number")
+        cols = list(numeric.columns)
+        for i in range(len(cols)):
+            for j in range(i + 1, len(cols)):
+                both = numeric[[cols[i], cols[j]]].dropna()
+                if len(both) < MIN_PAIR_ROWS:
+                    continue
+                r = both[cols[i]].corr(both[cols[j]])
+                if pd.notna(r):
+                    found.append(CorrelationPair(name, str(cols[i]), str(cols[j]), float(r), len(both)))
+    return found
 
-    if not pairs:
+
+def format_correlation_matrix(pairs: list[CorrelationPair], min_abs: float = 0.5) -> str:
+    strong = sorted((p for p in pairs if abs(p.r) >= min_abs), key=lambda p: -abs(p.r))
+    if not strong:
         return f"No strong correlations found (|r| >= {min_abs:.2f})."
-
-    pairs.sort(key=lambda t: -abs(t[2]))
-    return "\n".join(f"{a} vs {b}: r={r:.2f}" for a, b, r in pairs)
+    return "\n".join(f"{p.first} vs {p.second} ({p.table}, {p.rows} rows): r={p.r:.4f}" for p in strong)
 
 
 def statistical_correlate(
@@ -118,11 +168,12 @@ def statistical_correlate(
     llm: LLMClient,
     min_abs: float = 0.5,
 ) -> StatisticalResult:
-    corr = compute_correlations(tables)
-    summary = format_correlation_matrix(corr, min_abs=min_abs)
+    pairs = compute_correlations(tables)
+    summary = format_correlation_matrix(pairs, min_abs=min_abs)
     prompt = f"Question: {question}\n\nComputed correlations:\n{summary}"
     answer = llm.chat(system=STATISTICAL_SYSTEM_PROMPT, user=prompt)
-    return StatisticalResult(answer=answer, correlation_summary=summary)
+    shown = tuple(sorted((p for p in pairs if abs(p.r) >= min_abs), key=lambda p: -abs(p.r)))
+    return StatisticalResult(answer=answer, correlation_summary=summary, pairs=shown)
 
 
 # ---------- router ----------
@@ -183,3 +234,24 @@ def correlate(
     statistical = statistical_correlate(question, tables, llm) if tables else None
 
     return CorrelationReport(question=question, cross_doc=cross_doc, statistical=statistical)
+
+
+# ---------- JSON shape shared by the API, the chat stream and saved views ----------
+
+def cross_doc_to_dict(result: CrossDocResult | None) -> dict | None:
+    if result is None:
+        return None
+    return {"answer": result.answer, "sources": list(result.sources), "retrieved": list(result.retrieved)}
+
+
+def statistical_to_dict(result: StatisticalResult | None) -> dict | None:
+    if result is None:
+        return None
+    return {
+        "answer": result.answer,
+        "correlation_summary": result.correlation_summary,
+        "pairs": [
+            {"table": p.table, "first": p.first, "second": p.second, "r": round(p.r, 4), "rows": p.rows}
+            for p in result.pairs
+        ],
+    }

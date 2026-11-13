@@ -2,6 +2,7 @@ import { LogOut } from "lucide-react";
 import { Link, NavLink } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { glass } from "../ui";
+import { SIDEBAR_WIDTH, useSidebar } from "../sidebarState";
 import { ThemeToggle } from "./ThemeToggle";
 
 const NAV = [
@@ -9,6 +10,7 @@ const NAV = [
   { to: "/documents", label: "Documents" },
   { to: "/history", label: "History" },
   { to: "/progress", label: "Progress" },
+  { to: "/dashboards", label: "Dashboards" },
 ];
 
 /** Height of this bar — Layout (App.tsx) and Sidebar offset by it, so keep
@@ -24,6 +26,7 @@ const tabClasses = ({ isActive }: { isActive: boolean }) =>
 
 export function Header() {
   const { logout } = useAuth();
+  const { collapsed } = useSidebar();
 
   return (
     <header
@@ -33,14 +36,22 @@ export function Header() {
           Sidebar.tsx and App.tsx's lg:pl-[220px]) with the same right
           border, so the logo cell and the sidebar read as one column, and
           the tabs start exactly where the main section does. */}
-      <div className="flex shrink-0 items-center px-4 lg:w-[220px] lg:justify-center lg:border-r lg:border-[var(--line)]">
+      <div
+        className={`flex shrink-0 items-center overflow-hidden transition-[width,padding] duration-200 ease-in-out motion-reduce:transition-none ${collapsed ? "px-2" : "px-4"} lg:justify-center lg:border-r lg:border-[var(--line)] ${
+          collapsed ? SIDEBAR_WIDTH.closed : SIDEBAR_WIDTH.open
+        }`}
+      >
         {/* "/" redirects to /ask (see App.tsx), so the logo is always "home". */}
         <Link
           to="/"
           aria-label="Docent — go to Ask"
           className="font-display text-base font-semibold tracking-[0.16em] text-[var(--edit)] no-underline transition-opacity hover:opacity-75 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--index)] lg:text-lg"
         >
-          DOC<span className="text-[var(--locator)]">·</span>ENT
+          {collapsed ? "D" : (
+            <>
+              DOC<span className="text-[var(--locator)]">·</span>ENT
+            </>
+          )}
         </Link>
       </div>
 

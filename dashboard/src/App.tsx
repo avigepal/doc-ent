@@ -8,6 +8,8 @@ import { Documents } from "./pages/Documents";
 import { History } from "./pages/History";
 import { Login } from "./pages/Login";
 import { Progress } from "./pages/Progress";
+import { Dashboards } from "./pages/Dashboards";
+import { SIDEBAR_PAD, SidebarProvider, useSidebar } from "./sidebarState";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { token } = useAuth();
@@ -27,6 +29,7 @@ function Layout({ children }: { children: React.ReactNode }) {
   // max-w-7xl block rightward without giving it room to center.
   const pathname = useLocation().pathname;
   const onAsk = pathname === "/ask";
+  const { collapsed } = useSidebar();
   // the Documents table and its folder tree use the whole width; other pages stay centered
   const fullWidth = pathname === "/documents";
 
@@ -34,7 +37,7 @@ function Layout({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen pt-12 text-[14px] text-[var(--ink)]">
       <Header />
       {onAsk && <Sidebar />}
-      <main className={onAsk ? "lg:pl-[220px]" : undefined}>
+      <main className={`${onAsk ? (collapsed ? SIDEBAR_PAD.closed : SIDEBAR_PAD.open) : ""} transition-[width,padding] duration-200 ease-in-out motion-reduce:transition-none`}>
         <div className={fullWidth ? "px-6 py-7" : "mx-auto max-w-7xl px-6 py-7"}>{children}</div>
       </main>
     </div>
@@ -52,16 +55,19 @@ function guarded(element: React.ReactNode) {
 function App() {
   return (
     <ViewerProvider>
+    <SidebarProvider>
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/ask" element={guarded(<Ask />)} />
       <Route path="/documents" element={guarded(<Documents />)} />
       <Route path="/history" element={guarded(<History />)} />
       <Route path="/progress" element={guarded(<Progress />)} />
+      <Route path="/dashboards" element={guarded(<Dashboards />)} />
       {/* Old bookmarks (/status, /ingestion, the removed Overview page) fall through to "*" below. */}
       <Route path="/" element={<Navigate to="/ask" replace />} />
       <Route path="*" element={<Navigate to="/ask" replace />} />
     </Routes>
+    </SidebarProvider>
     </ViewerProvider>
   );
 }

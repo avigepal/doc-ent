@@ -36,6 +36,7 @@ import {
   type QueryResult,
 } from "../api/client";
 import { ModeToggle } from "../components/ModeToggle";
+import { SIDEBAR_LEFT, useSidebar } from "../sidebarState";
 import { AttachmentTray, STAGE_LABEL, isPending, type Attachment } from "../components/AttachmentTray";
 import { ResultCard, shortenSource } from "../components/ResultCard";
 import { hasMarkdownTable } from "../tables";
@@ -277,6 +278,7 @@ function keywordTerm(question: string): string {
 }
 
 export function Ask() {
+  const { collapsed: collapsedSidebar } = useSidebar();
   const [question, setQuestion] = useState("");
   // Scope (All/folders) and which chat this is live in the URL, not
   // local state — Sidebar.tsx owns the Scope UI and the chat list now
@@ -1149,7 +1151,7 @@ export function Ask() {
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className={`fixed right-0 bottom-0 left-0 border-t py-4 transition-colors lg:left-[220px] ${
+        className={`fixed right-0 bottom-0 left-0 border-t py-4 transition-[left,color,background-color,border-color] duration-200 ease-in-out motion-reduce:transition-none ${collapsedSidebar ? SIDEBAR_LEFT.closed : SIDEBAR_LEFT.open} ${
           dragging ? "border-[var(--index)] bg-[var(--index-soft)]" : `border-[var(--line)] ${glass}`
         }`}
       >

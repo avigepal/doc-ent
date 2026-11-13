@@ -235,3 +235,19 @@ class ReportJobRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
+
+
+class SavedViewRecord(Base):
+    """A standing correlation question: a name, the question, the folders it reads, and optionally how often
+    it runs by itself (interval_hours). last_result is the most recent finished run, shown on the Dashboards page."""
+
+    __tablename__ = "saved_views"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    folders: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    interval_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

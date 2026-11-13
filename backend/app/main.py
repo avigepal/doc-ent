@@ -444,6 +444,7 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
     from app.search.email_graph import email_events, parse_mail_question, parse_relation_question, relation_events
     from app.search.keyword import keyword_events, parse_keyword_query
     from app.search.pgvector_retrieval import retrieve_top_k
+    from app.search.correlate import wants_cross_document
     from app.search.query import stream_query
     from app.tasks.correlate import _embedder, _raw_dir, _text_llm
 
@@ -630,8 +631,34 @@ def query_stream_endpoint(payload: QuestionRequest, session: Session = Depends(g
                         query_text=decision.query,
                         file_ids=payload.file_ids,
                     )
+                    # Correlate (and questions that ask about relationships or numbers) read the whole scope:
+                    # widely retrieved passages for the comparison, and every spreadsheet for the statistics.
+                    compare_chunks = None
+                    tables = {}
+                    if forced_correlate or wants_cross_document(decision.query):
+                        from app.search.numeric_tables import load_numeric_tables
+
+                        wide = retrieve_top_k(
+                            session,
+                            query_embedding,
+                            k=settings.correlate_candidates,
+                            raw_dir=_raw_dir,
+                            folders=payload.folders,
+                            author=payload.author,
+                            title=payload.title,
+                            query_text=decision.query,
+                            file_ids=payload.file_ids,
+                        )
+                        compare_chunks = wide
+                        tables = load_numeric_tables(session, _raw_dir, payload.folders, payload.file_ids)
                     events = stream_query(
-                        decision.query, chunks, {}, _text_llm, spec=spec, compare=forced_correlate
+                        decision.query,
+                        chunks,
+                        tables,
+                        _text_llm,
+                        spec=spec,
+                        compare=forced_correlate,
+                        compare_chunks=compare_chunks,
                     )
 
             for evt in events:
@@ -976,7 +1003,88 @@ def correlate_endpoint(payload: QuestionRequest) -> dict:
     app/tasks/correlate.py:correlate."""
     from app.tasks.correlate import correlate
 
-    return correlate(payload.question, k=payload.k, folders=payload.folders, author=payload.author, title=payload.title)
+    return correlate(
+        payload.question,
+        k=settings.correlate_candidates,
+        folders=payload.folders,
+        author=payload.author,
+        title=payload.title,
+        file_ids=payload.file_ids,
+    )
+
+
+@app.post("/correlate/jobs", dependencies=[Depends(require_bearer_token)])
+def start_correlate_job(payload: QuestionRequest) -> dict:
+    """Run a correlation in the background (the correlate worker) and return a job id at once. Poll
+    GET /correlate/jobs/{job_id} for the result. Use this for big folders; /correlate waits for the answer."""
+    from app.tasks.correlate import correlate
+
+    job = correlate.delay(
+        payload.question,
+        k=settings.correlate_candidates,
+        folders=payload.folders,
+        author=payload.author,
+        title=payload.title,
+        file_ids=payload.file_ids,
+    )
+    return {"job_id": job.id, "state": job.state}
+
+
+class ViewRequest(BaseModel):
+    name: str
+    question: str
+    folders: list[str] = []
+    interval_hours: int | None = None  # None = run only when asked
+
+
+@app.get("/views", dependencies=[Depends(require_bearer_token)])
+def list_saved_views(session: Session = Depends(get_session)) -> dict:
+    from app.views_store import list_views
+
+    return {"views": list_views(session)}
+
+
+@app.post("/views", dependencies=[Depends(require_bearer_token)])
+def create_saved_view(payload: ViewRequest, session: Session = Depends(get_session)) -> dict:
+    from app.views_store import create_view
+
+    if not payload.name.strip() or not payload.question.strip():
+        raise HTTPException(status_code=400, detail="a view needs a name and a question")
+    try:
+        return create_view(session, payload.name, payload.question, payload.folders, payload.interval_hours)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
+@app.delete("/views/{view_id}", dependencies=[Depends(require_bearer_token)])
+def delete_saved_view(view_id: int, session: Session = Depends(get_session)) -> dict:
+    from app.views_store import delete_view
+
+    if not delete_view(session, view_id):
+        raise HTTPException(status_code=404, detail="no such view")
+    return {"deleted": view_id}
+
+
+@app.post("/views/{view_id}/run", dependencies=[Depends(require_bearer_token)])
+def run_saved_view(view_id: int) -> dict:
+    """Start a view's correlation in the background; poll GET /correlate/jobs/{job_id} for the result.
+    The finished result is also kept on the view as last_result."""
+    from app.tasks.correlate import run_view
+
+    job = run_view.delay(view_id)
+    return {"job_id": job.id, "state": job.state}
+
+
+@app.get("/correlate/jobs/{job_id}", dependencies=[Depends(require_bearer_token)])
+def correlate_job_status(job_id: str) -> dict:
+    from app.celery_app import celery_app
+
+    job = celery_app.AsyncResult(job_id)
+    if job.failed():
+        return {"job_id": job_id, "state": "FAILURE", "error": str(job.result)}
+    if job.successful():
+        return {"job_id": job_id, "state": "SUCCESS", "result": job.result}
+    return {"job_id": job_id, "state": job.state}
 
 
 class ExportRequest(BaseModel):

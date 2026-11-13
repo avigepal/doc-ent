@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     # question. 8 missed the answer in 1 of 28 test questions; 12 found it in
     # all 28 (see backend/app/evaluation).
     search_top_k: int = 12
+    # correlation: retrieve this many passages, keep the best one per document, at most this many documents
+    correlate_candidates: int = 150
+    correlate_max_files: int = 12
     # A detailed answer ("in detail", "tell me everything about ...") is planned as sections and written
     # one section per model call (app/search/sectioned.py), when the sources are at least this long.
     # Reranker (llama-server --reranking). Empty URL = no reranking. When set, search fetches

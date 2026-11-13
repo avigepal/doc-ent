@@ -2,18 +2,19 @@ import { ChevronDown, ChevronRight, CornerDownRight, Download, FileText, FileEdi
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { buttonSecondary, card, label, muted } from "../ui";
-import type { FileChange, GeneratedFile, RelationGraph } from "../api/client";
+import type { CrossDocFindings, FileChange, GeneratedFile, RelationGraph, StatisticalFindings } from "../api/client";
 import { useViewer } from "./DocumentViewer";
 import { Markdown } from "./Markdown";
 import { RelationChart } from "./RelationChart";
+import { CorrelationChart } from "./CorrelationChart";
 
 export interface ResultCardData {
   question: string;
   answer: string;
   sources: string[];
   grounded: boolean;
-  cross_doc: { answer: string; sources: string[] } | null;
-  statistical: { answer: string; correlation_summary: string } | null;
+  cross_doc: CrossDocFindings | null;
+  statistical: StatisticalFindings | null;
   graph?: RelationGraph | null;
   files?: GeneratedFile[];
 }
@@ -521,6 +522,11 @@ export function ResultCard({
           <div className="mt-2">
             <Markdown>{result.statistical.answer}</Markdown>
           </div>
+          {result.statistical.pairs && result.statistical.pairs.length > 0 && (
+            <div className="mt-3">
+              <CorrelationChart pairs={result.statistical.pairs} />
+            </div>
+          )}
           <pre className="font-mono mt-2 whitespace-pre-wrap rounded border border-[var(--line)] bg-[var(--locator-soft)] p-2.5 text-[11px]">
             {result.statistical.correlation_summary}
           </pre>

@@ -24,6 +24,10 @@ from app.search.correlate import (
     StatisticalResult,
     compare_documents,
     correlate,
+    statistical_correlate,
+    cross_doc_to_dict,
+    best_passages_per_file,
+    statistical_to_dict,
     wants_cross_document,
 )
 from app.search.retrieval import RetrievedChunk
@@ -100,6 +104,7 @@ def stream_query(
     similarity_threshold: float = 0.3,
     spec: AnswerSpec | None = None,
     compare: bool = False,
+    compare_chunks: list[RetrievedChunk] | None = None,
 ) -> Iterator[StreamEvent]:
     """Streaming counterpart to run_query/run_chat — yields events instead
     of returning one QueryResult, so a caller (see app/main.py's
@@ -128,7 +133,9 @@ def stream_query(
     if not chunks or max(c.score for c in chunks) < similarity_threshold:
         yield {"event": "meta", "data": {"sources": [], "grounded": False}}
         yield {"event": "token", "data": {"text": NOT_FOUND_MESSAGE}}
-        yield {"event": "extra", "data": {"cross_doc": None, "statistical": None}}
+        # the numbers come from the spreadsheets in scope, not from the passages, so statistics still apply
+        statistical = statistical_correlate(question, tables, llm) if tables else None
+        yield {"event": "extra", "data": {"cross_doc": None, "statistical": statistical_to_dict(statistical)}}
         return
 
     context, sources = build_context(chunks)
@@ -154,20 +161,18 @@ def stream_query(
 
     if compare:
         # the Correlate toggle: compare the passages that matched this answer, across their documents
-        report = CorrelationReport(question, compare_documents(question, chunks, llm), None)
+        # wider retrieval (compare_chunks) gives many documents; one passage from each keeps the prompt small
+        pool = compare_chunks if compare_chunks is not None else chunks
+        passages = best_passages_per_file(pool, settings.correlate_max_files)
+        statistical = statistical_correlate(question, tables, llm) if tables else None
+        report = CorrelationReport(question, compare_documents(question, passages, llm), statistical)
     else:
         report = correlate(question, chunks, tables, llm, cross_doc_enabled=False)
     yield {
         "event": "extra",
         "data": {
-            "cross_doc": None if report.cross_doc is None else {
-                "answer": report.cross_doc.answer,
-                "sources": report.cross_doc.sources,
-            },
-            "statistical": None if report.statistical is None else {
-                "answer": report.statistical.answer,
-                "correlation_summary": report.statistical.correlation_summary,
-            },
+            "cross_doc": cross_doc_to_dict(report.cross_doc),
+            "statistical": statistical_to_dict(report.statistical),
         },
     }
 

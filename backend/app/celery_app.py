@@ -17,6 +17,12 @@ celery_app.conf.task_routes = {
 # Queue names must match docker-compose.yml's celery-* service `-Q` flags.
 celery_app.conf.task_default_queue = "convert_fast"
 
+# Beat: the only schedule is the hourly check for saved correlation views that are due (see
+# app/tasks/correlate.py:run_due_views). The auto-ingest timer stays off.
+celery_app.conf.beat_schedule = {
+    "run-due-saved-views": {"task": "app.tasks.correlate.run_due_views", "schedule": 3600.0},
+}
+
 import app.tasks.convert  # noqa: E402,F401
 import app.tasks.summarize  # noqa: E402,F401
 import app.tasks.correlate  # noqa: E402,F401

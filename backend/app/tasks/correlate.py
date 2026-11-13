@@ -29,7 +29,13 @@ from app.celery_app import celery_app
 from app.config import settings
 from app.db import SessionLocal
 from app.search.ask import answer_grounded
-from app.search.correlate import correlate as run_correlate
+from app.search.correlate import (
+    correlate as run_correlate,
+    cross_doc_to_dict,
+    best_passages_per_file,
+    statistical_to_dict,
+)
+from app.search.numeric_tables import load_numeric_tables
 from app.search.embedding_client import EmbeddingClient
 from app.search.pgvector_retrieval import retrieve_top_k
 from app.search.query import run_chat, run_query
@@ -50,14 +56,8 @@ _raw_dir = str(Path(settings.data_dir) / "raw")
 
 def _correlation_report_to_dict(report) -> dict:
     return {
-        "cross_doc": None if report.cross_doc is None else {
-            "answer": report.cross_doc.answer,
-            "sources": report.cross_doc.sources,
-        },
-        "statistical": None if report.statistical is None else {
-            "answer": report.statistical.answer,
-            "correlation_summary": report.statistical.correlation_summary,
-        },
+        "cross_doc": cross_doc_to_dict(report.cross_doc),
+        "statistical": statistical_to_dict(report.statistical),
     }
 
 
@@ -100,9 +100,7 @@ def query(
             query_text=question,
             file_ids=file_ids,
         )
-        # TODO: populate from persisted spreadsheet pre-aggregation once
-        # that storage exists; statistical mode is a no-op until then.
-        tables: dict = {}
+        tables = load_numeric_tables(session, _raw_dir, folders, file_ids)
         result = run_query(question, chunks, tables, _text_llm)
         return {
             "question": result.question,
@@ -145,15 +143,18 @@ def ask(
 @celery_app.task(name="app.tasks.correlate.correlate")
 def correlate(
     question: str,
-    k: int = settings.search_top_k,
+    k: int = settings.correlate_candidates,
     folders: list[str] | None = None,
     author: str | None = None,
     title: str | None = None,
+    file_ids: list[int] | None = None,
 ) -> dict:
+    """Correlation over the whole scope: retrieve widely, keep one passage per document (so many documents
+    get a voice), and run statistics over every spreadsheet in scope."""
     session = SessionLocal()
     try:
         [query_embedding] = _embedder.embed([question])
-        chunks = retrieve_top_k(
+        found = retrieve_top_k(
             session,
             query_embedding,
             k=k,
@@ -162,9 +163,56 @@ def correlate(
             author=author,
             title=title,
             query_text=question,
+            file_ids=file_ids,
         )
-        tables: dict = {}
+        chunks = best_passages_per_file(found, settings.correlate_max_files)
+        tables = load_numeric_tables(session, _raw_dir, folders, file_ids)
         report = run_correlate(question, chunks, tables, _text_llm)
         return {"question": report.question, **_correlation_report_to_dict(report)}
     finally:
         session.close()
+
+
+@celery_app.task(name="app.tasks.correlate.run_view")
+def run_view(view_id: int) -> dict:
+    """Run a saved view and keep the result on the view (shown on the Dashboards page)."""
+    from datetime import datetime, timezone
+
+    from app.models import SavedViewRecord
+
+    session = SessionLocal()
+    try:
+        row = session.get(SavedViewRecord, view_id)
+        if row is None:
+            return {"view_id": view_id, "error": "view not found"}
+        question, folders = row.question, list(row.folders or [])
+    finally:
+        session.close()
+
+    result = correlate(question, k=settings.correlate_candidates, folders=folders)
+
+    session = SessionLocal()
+    try:
+        row = session.get(SavedViewRecord, view_id)
+        if row is not None:
+            row.last_result = {"question": question, **result}
+            row.last_run_at = datetime.now(timezone.utc)
+            session.commit()
+    finally:
+        session.close()
+    return {"view_id": view_id, **result}
+
+
+@celery_app.task(name="app.tasks.correlate.run_due_views")
+def run_due_views() -> list[int]:
+    """Beat calls this every hour: queue a run for each saved view whose interval has passed."""
+    from app.views_store import due_view_ids
+
+    session = SessionLocal()
+    try:
+        due = due_view_ids(session)
+    finally:
+        session.close()
+    for view_id in due:
+        run_view.delay(view_id)
+    return due

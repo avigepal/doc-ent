@@ -159,6 +159,21 @@ export const api = {
       body: JSON.stringify({ name }),
     }),
 
+  // Saved correlation views (the Dashboards page). A view's last_result is its most recent finished run.
+  listViews: () => request<{ views: SavedView[] }>("/views"),
+  createView: (view: { name: string; question: string; folders: string[]; interval_hours: number | null }) =>
+    request<SavedView>("/views", { method: "POST", body: JSON.stringify(view) }),
+  deleteView: (id: number) => request<{ deleted: number }>(`/views/${id}`, { method: "DELETE" }),
+  runView: (id: number) => request<{ job_id: string; state: string }>(`/views/${id}/run`, { method: "POST" }),
+  // Background correlation: start, then poll until state is SUCCESS or FAILURE.
+  startCorrelateJob: (question: string, folders: string[]) =>
+    request<{ job_id: string; state: string }>("/correlate/jobs", {
+      method: "POST",
+      body: JSON.stringify({ question, folders }),
+    }),
+  correlateJob: (jobId: string) =>
+    request<{ job_id: string; state: string; result?: CorrelateResult; error?: string }>(`/correlate/jobs/${jobId}`),
+
   // Unified entry point: one question, everything the corpus can say
   // about it — grounded answer plus cross-document/statistical
   // correlation, whichever apply. This is the only query call the
@@ -228,8 +243,8 @@ export const api = {
       onMeta?: (meta: { sources: string[]; grounded: boolean }) => void;
       onToken?: (text: string) => void;
       onExtra?: (extra: {
-        cross_doc: { answer: string; sources: string[] } | null;
-        statistical: { answer: string; correlation_summary: string } | null;
+        cross_doc: CrossDocFindings | null;
+        statistical: StatisticalFindings | null;
         graph?: RelationGraph | null;
       }) => void;
       onDone?: (historyId: number) => void;
@@ -457,7 +472,7 @@ export const api = {
     question: string,
     options: { folders?: string[]; fileIds?: number[]; historyId?: number } = {},
   ) =>
-    request<{ cross_doc: { answer: string; sources: string[] } | null }>("/query/compare", {
+    request<{ cross_doc: CrossDocFindings | null }>("/query/compare", {
       method: "POST",
       body: JSON.stringify({
         question,
@@ -655,6 +670,32 @@ export interface FileChange {
   accepted: boolean;
 }
 
+/** A saved correlation view; last_result is the latest finished run (null until it has run once). */
+export type SavedView = {
+  id: number;
+  name: string;
+  question: string;
+  folders: string[];
+  interval_hours: number | null;
+  last_result: (CorrelateResult & { question: string }) | null;
+  last_run_at: string | null;
+};
+
+/** What /correlate and a finished view run return. */
+export type CorrelateResult = {
+  question?: string;
+  cross_doc: CrossDocFindings | null;
+  statistical: StatisticalFindings | null;
+};
+
+/** One Pearson correlation, computed by the backend within a single table. */
+export type CorrelationPair = { table: string; first: string; second: string; r: number; rows: number };
+
+export type StatisticalFindings = { answer: string; correlation_summary: string; pairs?: CorrelationPair[] };
+
+/** sources = the documents the answer cites; retrieved = every document that was compared. */
+export type CrossDocFindings = { answer: string; sources: string[]; retrieved?: string[] };
+
 /** The people in an email relation chart: nodes are people, edges are the emails between them. */
 export interface RelationGraph {
   mode: "between" | "around";
@@ -680,8 +721,8 @@ export interface QueryResult {
   answer: string;
   sources: string[];
   grounded: boolean;
-  cross_doc: { answer: string; sources: string[] } | null;
-  statistical: { answer: string; correlation_summary: string } | null;
+  cross_doc: CrossDocFindings | null;
+  statistical: StatisticalFindings | null;
   graph?: RelationGraph | null;
   files?: GeneratedFile[];
   history_id?: number;
@@ -805,8 +846,8 @@ export interface QueryHistoryDetail extends QueryHistorySummary {
   suggestions?: string[];
   answer: string;
   sources: string[];
-  cross_doc: { answer: string; sources: string[] } | null;
-  statistical: { answer: string; correlation_summary: string } | null;
+  cross_doc: CrossDocFindings | null;
+  statistical: StatisticalFindings | null;
   graph?: RelationGraph | null;
 }
 

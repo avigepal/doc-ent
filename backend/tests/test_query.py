@@ -35,7 +35,7 @@ def test_run_query_combines_grounded_answer_with_no_correlation_for_single_sourc
 
 
 def test_run_query_includes_cross_doc_when_multiple_sources_retrieved():
-    llm = FakeLLM("combined")
+    llm = FakeLLM("combined [1][2]")
     chunks = [_chunk("a.pdf", "text a"), _chunk("b.pdf", "text b")]
 
     result = run_query("how do these relate?", chunks, {}, llm)
@@ -96,12 +96,13 @@ def test_stream_query_streams_the_answer_and_leaves_cross_doc_to_the_compare_but
 
 
 def test_stream_query_with_compare_adds_cross_doc_findings_for_the_same_passages():
-    llm = FakeLLM("they agree", stream_pieces=["they agree"])
+    llm = FakeLLM("they agree [1][2]", stream_pieces=["they agree"])
     chunks = [_chunk("a.pdf", "text a"), _chunk("b.pdf", "text b")]
 
     events = list(stream_query("how do these relate?", chunks, {}, llm, compare=True))
 
-    assert events[-1]["data"]["cross_doc"] == {"answer": "they agree", "sources": ["a.pdf", "b.pdf"]}
+    assert events[-1]["data"]["cross_doc"]["answer"] == "they agree [1][2]"
+    assert events[-1]["data"]["cross_doc"]["sources"] == ["a.pdf", "b.pdf"]
     assert len(llm.calls) == 2  # the answer, then the comparison over the same passages
 
 

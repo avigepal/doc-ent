@@ -1,0 +1,5 @@
+[
+  {"question": "How do the vendor shortlist and the contract draft relate?", "folders": ["relation_deep"], "expect_relation": true, "expect_sources": ["e03.eml", "e04.eml", "e05.eml"]},
+  {"question": "What did Carol say about the budget?", "folders": ["relation_deep"], "expect_relation": false, "expect_sources": []},
+  {"question": "Is there a link between the budget numbers and the launch plan?", "folders": ["relation_deep", "relation_test"], "expect_relation": false, "expect_sources": []}
+]

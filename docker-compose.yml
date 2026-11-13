@@ -98,6 +98,12 @@ services:
     <<: *backend-build
     command: celery -A app.celery_app worker -Q upload -c 2
 
+  # Beat only fires the hourly check for saved correlation views (app/celery_app.py). The auto-ingest
+  # timer is not scheduled here.
+  celery-beat:
+    <<: *backend-build
+    command: celery -A app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+
   celery-convert-ocr:
     <<: *backend-build
     command: celery -A app.celery_app worker -Q convert_ocr -c 1

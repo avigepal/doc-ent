@@ -122,3 +122,14 @@ CREATE TABLE IF NOT EXISTS email_links (
 CREATE INDEX IF NOT EXISTS idx_email_links_file_id ON email_links (file_id);
 CREATE INDEX IF NOT EXISTS idx_email_links_sender ON email_links (sender_addr);
 CREATE INDEX IF NOT EXISTS idx_email_links_recipient ON email_links (recipient_addr);
+
+CREATE TABLE IF NOT EXISTS saved_views (
+    id             BIGSERIAL PRIMARY KEY,
+    name           TEXT NOT NULL,
+    question       TEXT NOT NULL,
+    folders        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    interval_hours INT,
+    last_result    JSONB,
+    last_run_at    TIMESTAMPTZ,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
