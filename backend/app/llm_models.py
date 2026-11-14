@@ -11,12 +11,19 @@ model on demand, and that is the same path a normal question takes.
 
 from __future__ import annotations
 
+import time
+
 import httpx
 
 from app.config import settings
 
 # Arguments that mark a model as something other than a chat model.
 _NON_TEXT_FLAGS = ("--embeddings", "--reranking")
+
+# How long a looked-up active model is trusted before asking the server again. A short answer
+# keeps chat from asking the server on every single request; load and unload clear it at once.
+_ACTIVE_TTL_SECONDS = 5.0
+_active: dict = {"name": None, "at": 0.0}
 
 
 class ModelServerError(Exception):
@@ -57,6 +64,26 @@ def list_text_models(client: httpx.Client | None = None) -> list[dict]:
     return [{"id": e["id"], "loaded": _is_loaded(e)} for e in entries if _is_text_model(e)]
 
 
+def active_text_model() -> str:
+    """The chat model chat should use: the text model that is loaded now. If none is loaded (or the
+    model server cannot be reached), the LLAMA_TEXT_MODEL setting is used, as before."""
+    now = time.monotonic()
+    if _active["name"] and now - _active["at"] < _ACTIVE_TTL_SECONDS:
+        return _active["name"]
+    name = None
+    try:
+        name = next((m["id"] for m in list_text_models() if m["loaded"]), None)
+    except ModelServerError:
+        name = None
+    name = name or settings.llama_text_model
+    _active.update(name=name, at=now)
+    return name
+
+
+def forget_active_text_model() -> None:
+    _active.update(name=None, at=0.0)
+
+
 def _check_text_model(http: httpx.Client, model_id: str) -> None:
     known = {m["id"] for m in list_text_models(http)}
     if model_id not in known:
@@ -71,6 +98,8 @@ def unload_text_model(model_id: str, client: httpx.Client | None = None) -> None
         response.raise_for_status()
     except httpx.HTTPError as err:
         raise ModelServerError(f"could not unload {model_id}: {err}") from err
+    finally:
+        forget_active_text_model()
 
 
 def load_text_model(model_id: str, client: httpx.Client | None = None) -> None:
@@ -90,3 +119,5 @@ def load_text_model(model_id: str, client: httpx.Client | None = None) -> None:
         http.post(f"{_base()}/v1/chat/completions", json=body, headers=_headers()).raise_for_status()
     except httpx.HTTPError as err:
         raise ModelServerError(f"could not load {model_id}: {err}") from err
+    finally:
+        forget_active_text_model()

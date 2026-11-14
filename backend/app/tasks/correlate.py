@@ -39,6 +39,7 @@ from app.search.numeric_tables import load_numeric_tables
 from app.search.embedding_client import EmbeddingClient
 from app.search.pgvector_retrieval import retrieve_top_k
 from app.search.query import run_chat, run_query
+from app.llm_models import active_text_model
 from app.summarization.llm_client import LlamaClient
 
 _embedder = EmbeddingClient(
@@ -48,7 +49,7 @@ _embedder = EmbeddingClient(
 )
 _text_llm = LlamaClient(
     base_url=settings.llama_text_url,
-    model=settings.llama_text_model,
+    model=active_text_model,
     api_key=settings.llama_text_api_key or None,
 )
 _raw_dir = str(Path(settings.data_dir) / "raw")

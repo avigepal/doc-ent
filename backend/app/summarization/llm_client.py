@@ -26,8 +26,13 @@ class LlamaClient:
     ):
         self._base_url = base_url.rstrip("/")
         self._client = http_client or httpx.Client(timeout=timeout)
+        # A string names the model. A callable is asked on every request, so a client can follow
+        # whichever model is loaded (see app.llm_models.active_text_model).
         self._model = model
         self._api_key = api_key
+
+    def _model_name(self) -> str:
+        return self._model() if callable(self._model) else self._model
 
     def chat(
         self,
@@ -43,7 +48,7 @@ class LlamaClient:
         llama-server ignores fields it doesn't know."""
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
         body: dict = {
-            "model": self._model,
+            "model": self._model_name(),
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -79,7 +84,7 @@ class LlamaClient:
         response = self._client.post(
             f"{self._base_url}/v1/chat/completions",
             json={
-                "model": self._model,
+                "model": self._model_name(),
                 "messages": [
                     {"role": "system", "content": system},
                     {
@@ -111,7 +116,7 @@ class LlamaClient:
         terminated by a literal "data: [DONE]" line."""
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
         body: dict = {
-            "model": self._model,
+            "model": self._model_name(),
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},

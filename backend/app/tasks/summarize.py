@@ -29,12 +29,13 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import FileRecord, JobRecord
 from app.summarization.chunker import chunk_markdown
+from app.llm_models import active_text_model
 from app.summarization.llm_client import LlamaClient
 from app.summarization.map_reduce import map_summarize, reduce_summaries
 
 _llm = LlamaClient(
     base_url=settings.llama_text_url,
-    model=settings.llama_text_model,
+    model=active_text_model,
     api_key=settings.llama_text_api_key or None,
 )
 
