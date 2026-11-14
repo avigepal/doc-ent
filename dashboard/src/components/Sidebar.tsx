@@ -297,10 +297,11 @@ export function Sidebar() {
   return (
     <aside
       className={`shrink-0 overflow-y-auto overflow-x-hidden border-b border-[var(--line)] py-4 transition-[width,padding] duration-200 ease-in-out motion-reduce:transition-none lg:fixed lg:bottom-0 lg:left-0 lg:z-10 lg:border-b-0 lg:border-r ${SIDEBAR_TOP_CLASS} ${
-        collapsed ? `px-2 ${SIDEBAR_WIDTH.closed}` : `px-4 ${SIDEBAR_WIDTH.open}`
+        collapsed ? `px-4 lg:px-2 ${SIDEBAR_WIDTH.closed}` : `px-4 ${SIDEBAR_WIDTH.open}`
       }`}
     >
-      <div className={`flex items-center ${collapsed ? "flex-col gap-3" : "justify-end"}`}>
+      {/* The rail (collapse toggle, New chat) is desktop-only; on small screens the chat list always shows. */}
+      <div className={`hidden items-center justify-end lg:flex ${collapsed ? "lg:flex-col lg:justify-start lg:gap-3" : ""}`}>
         <button
           type="button"
           onClick={toggle}
@@ -321,7 +322,7 @@ export function Sidebar() {
       <div
         aria-hidden={collapsed}
         className={`transition-[opacity,visibility] duration-200 ease-in-out motion-reduce:transition-none ${
-          collapsed ? "invisible opacity-0" : "visible opacity-100"
+          collapsed ? "lg:invisible lg:opacity-0" : ""
         }`}
       >
       <>

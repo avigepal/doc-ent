@@ -1075,6 +1075,45 @@ def run_saved_view(view_id: int) -> dict:
     return {"job_id": job.id, "state": job.state}
 
 
+@app.get("/llm/text-models", dependencies=[Depends(require_bearer_token)])
+def list_text_model_status() -> dict:
+    """The chat models the llama-server knows, each with whether it is loaded now. Embedding and
+    reranker models are left out."""
+    from app.llm_models import ModelServerError, list_text_models
+
+    try:
+        return {"models": list_text_models()}
+    except ModelServerError as err:
+        raise HTTPException(status_code=503, detail=str(err))
+
+
+@app.post("/llm/text-models/{model_id}/load", dependencies=[Depends(require_bearer_token)])
+def load_text_model_endpoint(model_id: str) -> dict:
+    """Load one chat model and unload the other chat models first."""
+    from app.llm_models import ModelServerError, load_text_model
+
+    try:
+        load_text_model(model_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"no chat model named {model_id}")
+    except ModelServerError as err:
+        raise HTTPException(status_code=502, detail=str(err))
+    return {"loaded": model_id}
+
+
+@app.post("/llm/text-models/{model_id}/unload", dependencies=[Depends(require_bearer_token)])
+def unload_text_model_endpoint(model_id: str) -> dict:
+    from app.llm_models import ModelServerError, unload_text_model
+
+    try:
+        unload_text_model(model_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"no chat model named {model_id}")
+    except ModelServerError as err:
+        raise HTTPException(status_code=502, detail=str(err))
+    return {"unloaded": model_id}
+
+
 @app.get("/correlate/jobs/{job_id}", dependencies=[Depends(require_bearer_token)])
 def correlate_job_status(job_id: str) -> dict:
     from app.celery_app import celery_app

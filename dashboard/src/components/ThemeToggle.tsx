@@ -6,7 +6,7 @@ type Theme = "system" | "light" | "dark";
 const STORAGE_KEY = "doc:theme";
 const ORDER: Theme[] = ["system", "light", "dark"];
 const META: Record<Theme, { icon: LucideIcon; label: string }> = {
-  system: { icon: Monitor, label: "Match system" },
+  system: { icon: Monitor, label: "System" },
   light: { icon: Sun, label: "Light" },
   dark: { icon: Moon, label: "Dark" },
 };

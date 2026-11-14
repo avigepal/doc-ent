@@ -88,8 +88,20 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return (await response.json()) as T;
 }
 
+/** A chat model the model server knows, and whether it is loaded now. */
+export interface TextModel {
+  id: string;
+  loaded: boolean;
+}
+
 export const api = {
   health: () => request<{ status: string }>("/health"),
+
+  listTextModels: () => request<{ models: TextModel[] }>("/llm/text-models"),
+  loadTextModel: (id: string) =>
+    request<{ loaded: string }>(`/llm/text-models/${encodeURIComponent(id)}/load`, { method: "POST" }),
+  unloadTextModel: (id: string) =>
+    request<{ unloaded: string }>(`/llm/text-models/${encodeURIComponent(id)}/unload`, { method: "POST" }),
 
   /** Checks the login password on the server. Returns the session token to send on every later call;
    * throws ApiError (401 wrong password, 429 too many tries) otherwise. */
